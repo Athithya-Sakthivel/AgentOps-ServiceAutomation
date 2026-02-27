@@ -1,0 +1,118 @@
+###############################################################################
+# PYTHON
+###############################################################################
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.egg
+*.egg-info/
+.eggs/
+dist/
+build/
+pip-wheel-metadata/
+.venv/
+venv/
+.venv2/
+tmp.md
+tmp.sh
+tmp
+tmp2.sh
+infra/manifests/inference/02-deployment.yaml
+infra/manifests/qdrant/secret-sample.yaml
+###############################################################################
+# DATA + MODELS
+###############################################################################
+infra/manifests/qdrant/secret-sample.yaml
+tmp
+infra/pulumi_aws/pulumi-outputs.json
+infra/pulumi_aws/pulumi-exports.sh
+infra/pulumi_aws/.pulumi-logs
+infra/pulumi_aws/backups
+infra/pulumi_azure/.venv-pulumi
+infra/pulumi_azure/Pulumi.staging.yaml
+infra/pulumi_azure/Pulumi.prod.yaml
+state
+
+
+commands/
+commands
+models
+alerts/
+dashboards
+.repos
+*.onnx
+*.bin
+*.safetensors
+*.ckpt
+*.h5
+*.tar.gz
+infra/pulumi_azure/.pulumi-logs
+###############################################################################
+# DOCKER / CONTAINERS
+###############################################################################
+*.tar
+*.img
+docker-compose.override.yml
+infra/pulumi_azure/.pulumi_preview.json
+tmp
+infra/pulumi_azure/.pulumi_preview.err
+infra/pulumi_azure/pulumi-exports.sh
+infra/pulumi_azure/pulumi-outputs.json
+###############################################################################
+# PULUMI
+###############################################################################
+# Local state (never commit)
+infra/pulumi_aws/.pulumi/
+infra/pulumi_aws/Pulumi.*
+!.gitignore
+.state
+# Stack configs always excluded except template
+*.stack.yaml
+Pulumi.dev.yaml
+Pulumi.prod.yaml
+
+###############################################################################
+# APPLICATION BUILDS
+###############################################################################
+apps/**/node_modules/
+apps/**/package-lock.json
+apps/**/npm-debug.log
+
+###############################################################################
+# LOGS & TEMP
+###############################################################################
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+*.swo
+
+###############################################################################
+# OS / EDITOR NOISE
+###############################################################################
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.code-workspace
+
+###############################################################################
+# DEVCONTAINER
+###############################################################################
+.devcontainer/.cache/
+.devcontainer/state/
+
+###############################################################################
+# MISC
+###############################################################################
+.env
+.env.*
+*.local
+models
+*.onnx
+temp.sh

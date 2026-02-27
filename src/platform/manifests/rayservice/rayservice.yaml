@@ -1,0 +1,91 @@
+apiVersion: ray.io/v1alpha1
+kind: RayService
+metadata:
+  name: my-serve-app
+  namespace: default
+spec:
+  # Health thresholds (tune for your environment)
+  serviceUnhealthySecondThreshold: 300
+  deploymentUnhealthySecondThreshold: 300
+
+  # ------------------ Ray cluster config ------------------
+  rayClusterConfig:
+    # Must match the Ray version in the image
+    rayVersion: "2.54.0"
+    headGroupSpec:
+      groupName: head
+      replicas: 1
+      template:
+        spec:
+          containers:
+            - name: ray-head
+              image: myregistry.example.com/team/my-ray-serve:2.54.0
+              # KubeRay will run `ray start --head ...` in the image's WORKDIR
+              ports:
+                - containerPort: 8265   # dashboard (optional)
+                - containerPort: 8000   # serve ingress (if used)
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "1Gi"
+                limits:
+                  cpu: "1"
+                  memory: "2Gi"
+          # Add nodeSelector / tolerations / serviceAccount here if required
+    workerGroupSpecs:
+      - groupName: workers
+        replicas: 1                # initial; Ray autoscaler may increase
+        template:
+          spec:
+            containers:
+              - name: ray-worker
+                image: myregistry.example.com/team/my-ray-serve:2.54.0
+                resources:
+                  requests:
+                    cpu: "2"
+                    memory: "8Gi"
+                  limits:
+                    cpu: "4"
+                    memory: "16Gi"
+                env:
+                  - name: RAY_WORKER_ENV
+                    value: "1"
+            # nodeSelector, tolerations, GPU resources etc. go here
+
+    # Enable Ray's in-tree autoscaler so Ray can request more workers when Serve needs them.
+    # KubeRay will reconcile this and create autoscaler settings.
+    enableInTreeAutoscaling: true
+    autoscalerOptions:
+      minWorkers: 1
+      maxWorkers: 50
+      # providerOptions may be added depending on the autoscaler flavor
+
+  # ------------------ Serve config V2 ------------------
+  # We embed Serve config directly so KubeRay will submit it to the Ray head.
+  serveConfigV2: |
+    applications:
+      - name: my_app
+        # import_path: module:object  -> APIServer is the Serve ingress defined in app.py
+        import_path: app:APIServer
+        route_prefix: /
+        # No runtime_env needed because code and deps are baked into the image.
+        deployments:
+          - name: model-deployment
+            num_replicas: "auto"              # request-aware Serve autoscaler
+            autoscaling_config:
+              min_replicas: 2
+              max_replicas: 40
+              target_ongoing_requests: 4     # tune by load testing
+            ray_actor_options:
+              # resources requested per replica (Ray uses this to place actors)
+              num_cpus: 1
+              # num_gpus: 1                    # uncomment if GPU required
+            user_config: {}
+          - name: api-deployment
+            num_replicas: 2                    # ingress fronting layer, small fixed pool
+            ray_actor_options:
+              num_cpus: 0.5
+            user_config: {}
+
+  # Optional: add serviceAccountName, annotations, and secrets to allow imagePullSecrets
+  # serviceAccountName: ray-service-sa

@@ -1,0 +1,105 @@
+# KubeRay Operator values for Agent Platform
+
+# ---- Operator HA ----
+replicas: 2
+leaderElectionEnabled: true
+
+# ---- Image (pinned to match chart 1.5.1) ----
+image:
+  repository: quay.io/kuberay/operator
+  tag: v1.5.1
+  pullPolicy: IfNotPresent
+
+# ---- RBAC ----
+rbacEnable: true
+singleNamespaceInstall: false
+crNamespacedRbacEnable: true
+
+serviceAccount:
+  create: true
+  name: kuberay-operator
+
+
+# ---- Metrics ----
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: false   # set true if using Prometheus Operator
+    interval: 30s
+    honorLabels: true
+    selector: {}
+    namespace: ""
+
+# ---- Logging ----
+logging:
+  stdoutEncoder: json
+  fileEncoder: json
+  baseDir: ""
+  fileName: ""
+  sizeLimit: ""
+
+# ---- Scheduler Integration (disabled unless using Volcano/YuniKorn/etc.) ----
+batchScheduler:
+  enabled: false
+  name: ""
+
+# ---- Global Ray Container Defaults (disabled; set per RayService instead) ----
+configuration:
+  enabled: false
+  defaultContainerEnvs: []
+
+# ---- Feature Gates (safe defaults) ----
+featureGates:
+  - name: RayClusterStatusConditions
+    enabled: true
+  - name: RayJobDeletionPolicy
+    enabled: false
+  - name: RayMultiHostIndexing
+    enabled: false
+  - name: RayServiceIncrementalUpgrade
+    enabled: false
+
+# ---- Controller Performance ----
+reconcileConcurrency: 2
+
+kubeClient:
+  qps: 100.0
+  burst: 200
+
+# ---- Operator Resources ----
+# Sized for moderate workload (10–50 Ray clusters).
+# Increase memory if managing hundreds of Ray pods.
+resources:
+  limits:
+    cpu: 200m
+    memory: 1Gi
+  requests:
+    cpu: 100m
+    memory: 512Mi
+
+# ---- Security ----
+podSecurityContext: {}
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# ---- Networking ----
+service:
+  type: ClusterIP
+  port: 8080
+
+# ---- Scheduling (leave empty unless needed) ----
+nodeSelector: {}
+affinity: {}
+tolerations: []
+priorityClassName: ""
+
+# ---- Optional Advanced Flags (leave empty for platform stability) ----
+env: []
