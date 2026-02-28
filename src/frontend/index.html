@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agentic Platform</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        document.body.addEventListener('htmx:configRequest', function(evt) {
+            const token = localStorage.getItem('jwt_token');
+            if (token) {
+                evt.detail.headers['Authorization'] = 'Bearer ' + token;
+            }
+        });
+
+        document.body.addEventListener('htmx:afterRequest', function(evt) {
+            if (evt.detail.xhr.status === 401) {
+                localStorage.removeItem('jwt_token');
+                window.location.href = '/login';
+            }
+        });
+
+        function login(event) {
+            event.preventDefault();
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            
+            fetch('/api/v1/auth/login', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({email, password})
+            })
+            .then(response => {
+                if (!response.ok) throw new Error('Login failed');
+                return response.json();
+            })
+            .then(data => {
+                localStorage.setItem('jwt_token', data.access_token);
+                console.log('[auth] login successful');
+                window.location.href = '/';
+            })
+            .catch(err => {
+                console.error('[auth] login error', err);
+                document.getElementById('login-error').textContent = err.message;
+                document.getElementById('login-error').classList.remove('hidden');
+            });
+        }
+
+        function logout() {
+            localStorage.removeItem('jwt_token');
+            console.log('[auth] logged out');
+            window.location.href = '/login';
+        }
+
+        function approveAction(id, decision) {
+            fetch(`/api/v1/approvals/${id}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + localStorage.getItem('jwt_token')
+                },
+                body: JSON.stringify({decision})
+            })
+            .then(response => {
+                if (!response.ok) throw new Error('Action failed');
+                return response.json();
+            })
+            .then(() => {
+                console.log('[approval] decision recorded', {id, decision});
+                htmx.ajax('GET', '/api/v1/approvals', {target: '#approvals-table'});
+            })
+            .catch(err => alert('Failed: ' + err.message));
+        }
+    </script>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans">
+    
+    <div id="app-container" hx-on-load="checkAuth()">
+        <!-- Login View -->
+        <div id="login-view" class="hidden max-w-md mx-auto mt-20 p-6 bg-white rounded shadow">
+            <h2 class="text-2xl font-bold mb-4">Login</h2>
+            <div id="login-error" class="hidden mb-4 p-2 bg-red-100 text-red-700 rounded"></div>
+            <form onsubmit="login(event)">
+                <div class="mb-4">
+                    <label class="block text-sm font-bold mb-2">Email</label>
+                    <input type="email" id="email" required class="w-full p-2 border rounded">
+                </div>
+                <div class="mb-4">
+                    <label class="block text-sm font-bold mb-2">Password</label>
+                    <input type="password" id="password" required class="w-full p-2 border rounded">
+                </div>
+                <button type="submit" class="w-full bg-blue-600 text-white p-2 rounded hover:bg-blue-700">Login</button>
+            </form>
+        </div>
+
+        <!-- Main App View -->
+        <div id="main-view" class="hidden min-h-screen flex flex-col">
+            <header class="bg-white border-b p-4 flex justify-between items-center">
+                <nav class="flex gap-6">
+                    <a href="/" class="hover:text-blue-600" onclick="showPage('dashboard')">Dashboard</a>
+                    <a href="#" class="hover:text-blue-600" onclick="showPage('workflows')">Workflows</a>
+                    <a href="#" class="hover:text-blue-600" onclick="showPage('approvals')">Approvals</a>
+                </nav>
+                <div class="flex items-center gap-4">
+                    <span id="user-email" class="text-sm"></span>
+                    <button onclick="logout()" class="text-sm text-red-600 hover:underline">Logout</button>
+                </div>
+            </header>
+            
+            <main class="flex-1 p-8">
+                <!-- Dashboard -->
+                <div id="page-dashboard" class="page-section">
+                    <h1 class="text-3xl font-bold mb-6">Dashboard</h1>
+                    <div class="grid grid-cols-3 gap-6">
+                        <div class="bg-white p-6 rounded shadow">
+                            <div class="text-3xl font-bold" id="stat-workflows">-</div>
+                            <div class="text-gray-500">Total Workflows</div>
+                        </div>
+                        <div class="bg-white p-6 rounded shadow">
+                            <div class="text-3xl font-bold" id="stat-approvals">-</div>
+                            <div class="text-gray-500">Total Approvals</div>
+                        </div>
+                        <div class="bg-white p-6 rounded shadow">
+                            <div class="text-3xl font-bold text-yellow-600" id="stat-pending">-</div>
+                            <div class="text-gray-500">Pending Approvals</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Workflows -->
+                <div id="page-workflows" class="page-section hidden">
+                    <h1 class="text-3xl font-bold mb-6">Workflows</h1>
+                    <div id="workflows-list" class="bg-white rounded shadow overflow-hidden">
+                        <table class="w-full text-left">
+                            <thead class="bg-gray-100 border-b">
+                                <tr>
+                                    <th class="p-3">ID</th>
+                                    <th class="p-3">Status</th>
+                                    <th class="p-3">Created</th>
+                                    <th class="p-3">Updated</th>
+                                </tr>
+                            </thead>
+                            <tbody id="workflows-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Approvals -->
+                <div id="page-approvals" class="page-section hidden">
+                    <h1 class="text-3xl font-bold mb-6">Approvals</h1>
+                    <div id="approvals-list" class="bg-white rounded shadow overflow-hidden">
+                        <table class="w-full text-left">
+                            <thead class="bg-gray-100 border-b">
+                                <tr>
+                                    <th class="p-3">ID</th>
+                                    <th class="p-3">Workflow</th>
+                                    <th class="p-3">Action</th>
+                                    <th class="p-3">Amount</th>
+                                    <th class="p-3">Status</th>
+                                    <th class="p-3">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="approvals-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script>
+        let currentUser = null;
+
+        function checkAuth() {
+            const token = localStorage.getItem('jwt_token');
+            if (!token) {
+                showLogin();
+                return;
+            }
+            fetch('/api/v1/auth/me', {
+                headers: {'Authorization': 'Bearer ' + token}
+            })
+            .then(res => res.ok ? res.json() : Promise.reject())
+            .then(user => {
+                currentUser = user;
+                showApp(user);
+            })
+            .catch(() => {
+                localStorage.removeItem('jwt_token');
+                showLogin();
+            });
+        }
+
+        function showLogin() {
+            document.getElementById('login-view').classList.remove('hidden');
+            document.getElementById('main-view').classList.add('hidden');
+        }
+
+        function showApp(user) {
+            document.getElementById('login-view').classList.add('hidden');
+            document.getElementById('main-view').classList.remove('hidden');
+            document.getElementById('user-email').textContent = user.email;
+            loadDashboard();
+            showPage('dashboard');
+        }
+
+        function showPage(pageId) {
+            document.querySelectorAll('.page-section').forEach(el => el.classList.add('hidden'));
+            document.getElementById('page-' + pageId).classList.remove('hidden');
+            if (pageId === 'workflows') loadWorkflows();
+            if (pageId === 'approvals') loadApprovals();
+        }
+
+        async function loadDashboard() {
+            try {
+                const [wf, ap] = await Promise.all([
+                    fetch('/api/v1/workflows').then(r => r.ok ? r.json() : []),
+                    fetch('/api/v1/approvals').then(r => r.ok ? r.json() : [])
+                ]);
+                document.getElementById('stat-workflows').textContent = wf.length;
+                document.getElementById('stat-approvals').textContent = ap.length;
+                document.getElementById('stat-pending').textContent = ap.filter(x => x.status === 'pending').length;
+            } catch (e) { console.error('[dash] load error', e); }
+        }
+
+        async function loadWorkflows() {
+            try {
+                const data = await fetch('/api/v1/workflows').then(r => r.json());
+                const tbody = document.getElementById('workflows-body');
+                tbody.innerHTML = data.map(w => `
+                    <tr class="border-b">
+                        <td class="p-3 font-mono text-sm">${w.id}</td>
+                        <td class="p-3"><span class="px-2 py-1 rounded text-xs ${getStatusColor(w.status)}">${w.status}</span></td>
+                        <td class="p-3 text-sm">${new Date(w.created_at).toLocaleString()}</td>
+                        <td class="p-3 text-sm">${new Date(w.updated_at).toLocaleString()}</td>
+                    </tr>
+                `).join('');
+            } catch (e) { console.error('[wf] load error', e); }
+        }
+
+        async function loadApprovals() {
+            if (currentUser?.role !== 'admin') {
+                document.getElementById('approvals-body').innerHTML = '<tr><td colspan="6" class="p-4 text-red-500">Admin access required</td></tr>';
+                return;
+            }
+            try {
+                const data = await fetch('/api/v1/approvals').then(r => r.json());
+                const tbody = document.getElementById('approvals-body');
+                tbody.innerHTML = data.map(a => `
+                    <tr class="border-b">
+                        <td class="p-3 font-mono text-sm">${a.id}</td>
+                        <td class="p-3 font-mono text-sm">${a.workflow_id}</td>
+                        <td class="p-3 text-sm">${a.action_type}</td>
+                        <td class="p-3 text-sm">$${(a.amount || 0).toFixed(2)}</td>
+                        <td class="p-3"><span class="px-2 py-1 rounded text-xs ${getStatusColor(a.status)}">${a.status}</span></td>
+                        <td class="p-3">
+                            ${a.status === 'pending' ? `
+                                <button onclick="approveAction('${a.id}', 'approve')" class="mr-2 px-3 py-1 bg-green-600 text-white rounded text-xs hover:bg-green-700">Approve</button>
+                                <button onclick="approveAction('${a.id}', 'reject')" class="px-3 py-1 bg-red-600 text-white rounded text-xs hover:bg-red-700">Reject</button>
+                            ` : '<span class="text-gray-400">-</span>'}
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (e) { console.error('[ap] load error', e); }
+        }
+
+        function getStatusColor(status) {
+            if (status === 'completed' || status === 'approved') return 'bg-green-100 text-green-800';
+            if (status === 'pending') return 'bg-yellow-100 text-yellow-800';
+            return 'bg-red-100 text-red-800';
+        }
+    </script>
+</body>
+</html>

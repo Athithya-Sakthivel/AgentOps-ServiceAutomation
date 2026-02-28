@@ -3,5 +3,7 @@ fastapi==0.133.1
 uvicorn==0.41.0
 langchain==1.2.10
 langgraph==1.0.9
-langchain-groq==1.1.2
 langgraph-checkpoint-postgres==3.0.4
+llamacpp==0.1.14
+sqlalchemy==2.0.47
+asyncpg==0.31.0
