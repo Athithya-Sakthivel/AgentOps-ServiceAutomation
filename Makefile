@@ -1,4 +1,28 @@
+recreate:
+	make lc && make rollout-default-sc && make rollout-pg && make rollout-kuberay-operator && \
+	make test-kuberay-operator && make test-pg
 
+rollout-default-sc:
+	bash src/scripts/default_storage_class.sh
+
+rollout-pg:
+	bash src/scripts/postgres_cluster.sh --rollout
+
+test-pg:
+	bash src/tests/postgres.sh
+
+delete-pg:
+	kubectl delete crd $(kubectl get crd -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -E 'cnpg.io|barmancloud.cnpg.io') || true
+	kubectl delete ns cnpg-system databases || true
+
+delete-backups:
+	aws s3 rm s3://${S3_BUCKET}/app-postgres-objectstore/ --recursive || true
+
+rollout-kuberay-operator:
+	bash src/scripts/kuberay_operator.sh --rollout
+
+test-kuberay-operator:
+	bash src/tests/kuberay_operator.sh
 
 
 s3:
@@ -40,19 +64,6 @@ delete-s3:
 
 
 
-rollout-pg-cluster:
-	bash src/platform/postgres/postgres_cluster.sh --rollout || true  # Installs cert-manager, CNPG, plugin, ObjectStore, Cluster
-
-
-restore-pg:
-	bash 
-
-delete-pg-cluster:
-	kubectl delete crd $(kubectl get crd -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -E 'cnpg.io|barmancloud.cnpg.io') || true
-	kubectl delete ns cnpg-system databases || true
-
-delete-backups:
-	aws s3 rm s3://${S3_BUCKET}/app-postgres-objectstore/ --recursive || true
 
 
 
@@ -293,8 +304,8 @@ test-retriever:
 
 
 lc:
-	bash utils/lc.sh
-
+	kind delete cluster --name local-cluster && kind create cluster --name local-cluster
+	
 tree:
 	tree -a -I '.git|.venv|.repos|__pycache__|venv|commands.sh|raw_data|.venv-pulumi|.venv2|archive|tmp.md|docs|models|tmp|raw|chunked'
 
