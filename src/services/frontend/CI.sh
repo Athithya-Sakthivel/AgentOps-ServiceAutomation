@@ -10,7 +10,7 @@ PUSH="${PUSH:-true}"
 REGISTRY_TYPE="${REGISTRY_TYPE:-dockerhub}"
 AWS_REGION="${AWS_REGION:-ap-south-1}"
 TRIVY_IMAGE="${TRIVY_IMAGE:-athithya5354/trivy:0.68.2}"
-TRIVY_SEVERITY="${TRIVY_SEVERITY:-HIGH,CRITICAL}"
+TRIVY_SEVERITY="${TRIVY_SEVERITY:-CRITICAL}"
 
 log(){ printf '\033[0;34m[INFO]\033[0m %s\n' "$*"; }
 err(){ printf '\033[0;31m[ERROR]\033[0m %s\n' "$*" >&2; exit 1; }

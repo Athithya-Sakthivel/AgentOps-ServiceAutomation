@@ -72,7 +72,7 @@ delete-s3:
 
 
 push-frontend:
-	git add .github/workflows/ src/services/frontend/CI.sh
+	git add .github/workflows/ src/services/frontend/
 	git commit -m "updating nginx SPA image"
 	git push origin main
 
