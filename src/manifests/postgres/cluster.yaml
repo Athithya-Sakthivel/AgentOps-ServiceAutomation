@@ -1,0 +1,25 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: app-postgres
+  namespace: databases
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.10-minimal-trixie
+  storage:
+    size: 5Gi
+    storageClass: local-path
+    resizeInUseVolumes: true
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+  enableSuperuserAccess: false
+  enablePDB: true
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"

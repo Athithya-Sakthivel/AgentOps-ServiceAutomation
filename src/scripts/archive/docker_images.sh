@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SOURCE_IMAGES="${SOURCE_IMAGES:-ghcr.io/cloudnative-pg/postgresql:16.10-minimal-trixie,valkey/valkey:9.0.2-alpine}"
+SOURCE_IMAGES="${SOURCE_IMAGES:-ghcr.io/cloudnative-pg/postgresql:16.10-minimal-trixie,docker.io/aquasec/trivy:0.68.2}"
 DOCKER_USERNAME="${DOCKER_USERNAME:=athithya5354}"
 DOCKER_PASSWORD="${DOCKER_PASSWORD:?Set DOCKER_PASSWORD}"
 TARGET_PREFIX="${TARGET_PREFIX:-$DOCKER_USERNAME}"

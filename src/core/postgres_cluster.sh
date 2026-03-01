@@ -4,7 +4,7 @@ set -euo pipefail
 # === CONFIGURATION ===
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly MANIFEST_DIR="${SCRIPT_DIR}/../manifests/postgres"
-readonly ARCHIVE_DIR="${SCRIPT_DIR}/../archive"
+readonly ARCHIVE_DIR=src/scripts/archive
 readonly K8S_CLUSTER="${K8S_CLUSTER:-kind}"
 
 # === STRONG DEFAULTS (Must match default_storage_class.sh) ===

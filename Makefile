@@ -1,16 +1,19 @@
 recreate:
 	make lc && make rollout-default-sc && make rollout-pg && make rollout-kuberay-operator && \
 	make test-kuberay-operator && make test-pg && \
-	make rollout-signoz
+	make rollout-signoz 
 
 rollout-signoz:
-	bash src/core/signoz.sh --rollout
+	bash src/core/signoz.sh --rollout && bash src/tests/signoz.sh
 
 rollout-default-sc:
 	bash src/core/default_storage_class.sh
 
 rollout-pg:
-	bash src/scripts/postgres_cluster.sh --rollout
+	bash src/core/postgres_cluster.sh --rollout
+
+rollout-kuberay-operator:
+	bash src/core/kuberay_operator.sh --rollout && bash src/tests/kuberay_operator.sh
 
 test-pg:
 	bash src/tests/postgres.sh
@@ -18,19 +21,6 @@ test-pg:
 delete-pg:
 	kubectl delete crd $(kubectl get crd -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -E 'cnpg.io|barmancloud.cnpg.io') || true
 	kubectl delete ns cnpg-system databases || true
-
-delete-backups:
-	aws s3 rm s3://${S3_BUCKET}/app-postgres-objectstore/ --recursive || true
-
-rollout-kuberay-operator:
-	bash src/scripts/kuberay_operator.sh --rollout
-
-test-kuberay-operator:
-	bash src/tests/kuberay_operator.sh
-
-test-signoz:
-	bash src/tests/signoz.sh
-
 
 lc:
 	kind delete cluster --name local-cluster && kind create cluster --name local-cluster && bash src/core/default_storage_class.sh
@@ -59,6 +49,9 @@ s3:
 		echo "Added S3_BUCKET=$$BUCKET to ~/.bashrc"; \
 	fi
 
+delete-backups:
+	aws s3 rm s3://${S3_BUCKET}/app-postgres-objectstore/ --recursive || true
+
 delete-s3:
 	if [ -z "$$S3_BUCKET" ]; then \
 		ACCOUNT_ID=$$(aws sts get-caller-identity --query Account --output text); \
@@ -78,9 +71,10 @@ delete-s3:
 
 
 
-
-
-
+push-frontend:
+	git add .github/workflows/ src/services/frontend/CI.sh
+	git commit -m "updating nginx SPA image"
+	git push origin main
 
 rollout-valkey:
 	bash src/platform/valkey.sh --rollout

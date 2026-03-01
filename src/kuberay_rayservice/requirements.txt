@@ -1,0 +1,27 @@
+ray[serve]==2.54.0                      # Serves ML models and agents with token-aware autoscaling
+fastapi==0.134.0                        # High-performance async API framework
+uvicorn==0.41.0                         # ASGI server to run FastAPI
+langchain==1.2.10                       # LLM orchestration utilities and chains
+langgraph==1.0.10                       # Cyclic graph engine for agentic state machines
+langgraph-checkpoint-postgres==3.0.4    # Persists graph state/checkpoints to Postgres
+llamacpp==0.1.14                        # CPU/GPU efficient inference for GGUF LLM models
+sqlalchemy==2.0.47                      # ORM and SQL toolkit for database interactions
+asyncpg==0.31.0                         # High-performance async Postgres driver
+httpx==0.28.1                           # Async HTTP client for external API calls
+python-multipart==0.0.20                # Parses multipart/form-data for file uploads
+PyJWT==2.8.0                            # Encodes and decodes JSON Web Tokens for auth
+itsdangerous==2.2.0                     # Cryptographic signing for session/security data
+authlib==1.6.5                          # OAuth2 and OpenID Connect client implementation
+jinja2==3.1.6                           # Template engine for dynamic HTML generation
+opentelemetry-api==1.39.1               # Standard interfaces for telemetry data
+opentelemetry-sdk==1.39.1               # Implementation of OpenTelemetry tracing
+opentelemetry-exporter-otlp-proto-grpc==1.39.1  # Exports traces to OTLP collectors via gRPC
+opentelemetry-instrumentation==0.60b1   # Base package for auto-instrumenting libraries
+opentelemetry-instrumentation-fastapi==0.60b1   # Auto-traces FastAPI request lifecycles
+opentelemetry-instrumentation-sqlalchemy==0.60b1 # Auto-traces SQLAlchemy DB queries
+opentelemetry-instrumentation-asyncpg==0.60b1   # Auto-traces asyncpg database calls
+opentelemetry-instrumentation-httpx==0.60b1     # Auto-traces outgoing HTTPX requests
+opentelemetry-instrumentation-requests==0.60b1  # Auto-traces synchronous requests calls
+opentelemetry-instrumentation-threading==0.60b1 # Traces thread execution for context propagation
+opentelemetry-instrumentation-langchain==0.52.6 # Auto-traces LangChain/LangGraph steps
+opentelemetry-semantic-conventions-ai==0.4.14   # AI-specific attribute standards for traces
