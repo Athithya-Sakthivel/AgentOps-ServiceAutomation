@@ -2,12 +2,12 @@
 set -euo pipefail
 
 IMAGE_NAME="${IMAGE_NAME:-agentops-spa}"
-IMAGE_TAG="${IMAGE_TAG:-local}"
+IMAGE_TAG="${IMAGE_TAG:-v1}"
 BUILD_CONTEXT="${BUILD_CONTEXT:-src/frontend}"
 DOCKERFILE_PATH="${DOCKERFILE_PATH:-${BUILD_CONTEXT}/Dockerfile}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 PUSH="${PUSH:-true}"
-REGISTRY_TYPE="${REGISTRY_TYPE:-dockerhub}"
+REGISTRY_TYPE="${REGISTRY_TYPE:-dockerhub}" # or EKS
 AWS_REGION="${AWS_REGION:-ap-south-1}"
 
 log(){ printf '\033[0;34m[INFO]\033[0m %s\n' "$*"; }
