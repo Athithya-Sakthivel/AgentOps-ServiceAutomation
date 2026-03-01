@@ -39,4 +39,4 @@ jobs:
           AWS_REGION: ${{ vars.AWS_REGION }}
           ECR_REPO: ${{ vars.ECR_REPO }}
         run: |
-          bash src/frontend/build_and_push_spa.sh
+          bash src/frontend/CI.sh

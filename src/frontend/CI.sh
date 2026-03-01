@@ -2,12 +2,12 @@
 set -euo pipefail
 
 IMAGE_NAME="${IMAGE_NAME:-agentops-spa}"
-IMAGE_TAG="${IMAGE_TAG:-v1}"
+IMAGE_TAG="${IMAGE_TAG:-staging-multiarch-v1}"
 BUILD_CONTEXT="${BUILD_CONTEXT:-src/frontend}"
 DOCKERFILE_PATH="${DOCKERFILE_PATH:-${BUILD_CONTEXT}/Dockerfile}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
 PUSH="${PUSH:-true}"
-REGISTRY_TYPE="${REGISTRY_TYPE:-dockerhub}" # or EKS
+REGISTRY_TYPE="${REGISTRY_TYPE:-dockerhub}"
 AWS_REGION="${AWS_REGION:-ap-south-1}"
 
 log(){ printf '\033[0;34m[INFO]\033[0m %s\n' "$*"; }
@@ -28,22 +28,29 @@ if [ "${REGISTRY_TYPE}" = "ecr" ]; then
   if [ -z "${ECR_REPO:-}" ]; then err "ECR_REPO required for ECR"; fi
   IMAGE_REF="${ECR_REPO}:${IMAGE_TAG}"
   log "Authenticating to ECR"
-  aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "$(echo "${ECR_REPO}" | cut -d/ -f1)"
+  aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "$(echo "${ECR_REPO}" | cut -d'/' -f1)"
 else
   if [ -z "${DOCKER_USERNAME:-}" ]; then err "DOCKER_USERNAME required for Docker Hub"; fi
   IMAGE_REF="${DOCKER_USERNAME}/${IMAGE_NAME}:${IMAGE_TAG}"
   log "Authenticating to Docker Hub"
-  echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
+  printf '%s\n' "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
 fi
 
 log "Downloading security scanners"
 TRIVY_VERSION="0.69.1"
-OPENGREP_VERSION="1.16.1"
-curl -sfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" | tar -xz -C /tmp
-curl -sfL "https://github.com/opengrep/opengrep/releases/download/v${OPENGREP_VERSION}/opengrep-v${OPENGREP_VERSION}-x86_64-unknown-linux-musl.tar.gz" | tar -xz -C /tmp opengrep
+TRIVY_URL="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+curl -sfL "${TRIVY_URL}" | tar -xz -C /tmp trivy
+chmod +x /tmp/trivy
+
+OPENGREP_VERSION="1.16.2"
+OPENGREP_URL="https://github.com/opengrep/opengrep/releases/download/v${OPENGREP_VERSION}/opengrep_manylinux_x86"
+OPENGREP_SHA256="6f74e2624cd9b54e2cbca500dc9905c132b610cba487d2493a948d9d08b8fcb9"
+curl -sfL -o /tmp/opengrep "${OPENGREP_URL}"
+echo "${OPENGREP_SHA256}  /tmp/opengrep" | sha256sum -c - >/dev/null
+chmod +x /tmp/opengrep
 
 log "Scanning source for secrets with OpenGrep"
-/tmp/opengrep scan "${BUILD_CONTEXT}" --error || {
+/tmp/opengrep scan "${BUILD_CONTEXT}" --exit-code 1 || {
   err "OpenGrep detected security issues in source. Review findings above."
 }
 
