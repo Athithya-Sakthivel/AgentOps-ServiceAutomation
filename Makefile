@@ -1,13 +1,13 @@
 recreate:
 	make lc && make rollout-default-sc && make rollout-pg && make rollout-kuberay-operator && \
 	make test-kuberay-operator && make test-pg && \
-	make 
+	make rollout-signoz
 
 rollout-signoz:
-	bash src/scripts/signoz.sh --rollout
+	bash src/core/signoz.sh --rollout
 
 rollout-default-sc:
-	bash src/scripts/default_storage_class.sh
+	bash src/core/default_storage_class.sh
 
 rollout-pg:
 	bash src/scripts/postgres_cluster.sh --rollout
@@ -33,7 +33,7 @@ test-signoz:
 
 
 lc:
-	kind delete cluster --name local-cluster && kind create cluster --name local-cluster && bash src/scripts/default_storage_class.sh
+	kind delete cluster --name local-cluster && kind create cluster --name local-cluster && bash src/core/default_storage_class.sh
 	
 tree:
 	tree -a -I '.git|.venv|.repos|__pycache__|venv|commands.sh|raw_data|.venv-pulumi|.venv2|archive|tmp.md|docs|models|tmp|raw|chunked'

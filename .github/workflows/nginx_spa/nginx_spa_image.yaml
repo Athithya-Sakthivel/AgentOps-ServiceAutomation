@@ -1,0 +1,43 @@
+name: Build and Push NGINX SPA Image
+
+on:
+  push:
+    paths:
+      - src/frontend/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-push-scan:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || 'staging' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build, Scan, Push SPA Image
+        env:
+          IMAGE_NAME: agentops-spa
+          IMAGE_TAG: ${{ github.sha }}
+          PLATFORMS: linux/amd64,linux/arm64
+          BUILD_CONTEXT: src/frontend
+          DOCKERFILE_PATH: src/frontend/Dockerfile
+          PUSH: "true"
+          REGISTRY_TYPE: ${{ vars.REGISTRY_TYPE || 'dockerhub' }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ECR_REPO: ${{ vars.ECR_REPO }}
+        run: |
+          chmod +x .github/workflows/nginx_spa/build_and_push_spa.sh
+          .github/workflows/nginx_spa/build_and_push_spa.sh

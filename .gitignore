@@ -75,6 +75,7 @@ Pulumi.prod.yaml
 .repos
 .state
 .venv
+.repos
 
 ###############################################################################
 # APPLICATION BUILDS
