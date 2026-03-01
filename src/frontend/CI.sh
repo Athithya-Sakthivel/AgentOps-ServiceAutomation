@@ -36,18 +36,25 @@ else
   printf '%s\n' "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
 fi
 
+
 log "Downloading security scanners"
+
+# Trivy
 TRIVY_VERSION="0.69.1"
 TRIVY_URL="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
-curl -sfL "${TRIVY_URL}" | tar -xz -C /tmp trivy
+curl -fL -o /tmp/trivy.tar.gz "${TRIVY_URL}" || err "Failed to download Trivy from ${TRIVY_URL}"
+tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
+rm -f /tmp/trivy.tar.gz
 chmod +x /tmp/trivy
 
+# OpenGrep
 OPENGREP_VERSION="1.16.2"
 OPENGREP_URL="https://github.com/opengrep/opengrep/releases/download/v${OPENGREP_VERSION}/opengrep_manylinux_x86"
 OPENGREP_SHA256="6f74e2624cd9b54e2cbca500dc9905c132b610cba487d2493a948d9d08b8fcb9"
-curl -sfL -o /tmp/opengrep "${OPENGREP_URL}"
-echo "${OPENGREP_SHA256}  /tmp/opengrep" | sha256sum -c - >/dev/null
+curl -fL -o /tmp/opengrep "${OPENGREP_URL}" || err "Failed to download OpenGrep from ${OPENGREP_URL}"
+echo "${OPENGREP_SHA256}  /tmp/opengrep" | sha256sum -c - >/dev/null || err "OpenGrep checksum verification failed"
 chmod +x /tmp/opengrep
+
 
 log "Scanning source for secrets with OpenGrep"
 /tmp/opengrep scan "${BUILD_CONTEXT}" --exit-code 1 || {
