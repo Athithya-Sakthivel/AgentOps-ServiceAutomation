@@ -28,10 +28,6 @@ jobs:
       - name: Build, Scan, Push SPA Image
         env:
           IMAGE_NAME: agentops-spa
-          IMAGE_TAG: ${{ github.sha }}
-          PLATFORMS: linux/amd64,linux/arm64
-          BUILD_CONTEXT: src/frontend
-          DOCKERFILE_PATH: src/frontend/Dockerfile
           PUSH: "true"
           REGISTRY_TYPE: ${{ vars.REGISTRY_TYPE || 'dockerhub' }}
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
