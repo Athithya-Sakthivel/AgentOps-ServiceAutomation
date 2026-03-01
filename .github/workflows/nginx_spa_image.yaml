@@ -3,7 +3,7 @@ name: Build and Push NGINX SPA Image
 on:
   push:
     paths:
-      - src/frontend/**
+      - src/services/frontend/**
   workflow_dispatch:
 
 permissions:
