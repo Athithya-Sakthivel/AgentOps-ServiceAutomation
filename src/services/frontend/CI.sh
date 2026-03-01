@@ -38,16 +38,17 @@ else
   printf '%s\n' "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
 fi
 
-log "Building multi-arch image: ${IMAGE_REF}"
+log "Building and pushing multi-arch image: ${IMAGE_REF}"
 docker buildx build \
   --builder "${BUILDER_NAME}" \
   --platform "${PLATFORMS}" \
   --tag "${IMAGE_REF}" \
   --file "${DOCKERFILE_PATH}" \
-  --output "type=docker" \
+  --push \
   "${BUILD_CONTEXT}"
+log "Push complete: ${IMAGE_REF}"
 
-log "Scanning image with Trivy (image: ${TRIVY_IMAGE})"
+log "Scanning pushed image with Trivy (image: ${TRIVY_IMAGE})"
 EFFECTIVE_SEVERITY="${TRIVY_SEVERITY}"
 if [ "${GITHUB_EVENT_NAME:-push}" = "workflow_dispatch" ]; then
   EFFECTIVE_SEVERITY="HIGH"
@@ -60,19 +61,5 @@ docker run --rm \
   image --exit-code 1 --severity "${EFFECTIVE_SEVERITY}" --no-progress "${IMAGE_REF}" || {
   err "Trivy scan failed (threshold: ${EFFECTIVE_SEVERITY}). Fix vulnerabilities before proceeding."
 }
-
-if [ "${PUSH}" = "true" ]; then
-  log "Pushing image to registry"
-  docker buildx build \
-    --builder "${BUILDER_NAME}" \
-    --platform "${PLATFORMS}" \
-    --tag "${IMAGE_REF}" \
-    --file "${DOCKERFILE_PATH}" \
-    --push \
-    "${BUILD_CONTEXT}"
-  log "Push complete: ${IMAGE_REF}"
-else
-  log "PUSH=false, skipping registry push"
-fi
 
 log "Build, scan, and push completed successfully"

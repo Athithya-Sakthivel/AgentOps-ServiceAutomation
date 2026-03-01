@@ -1,0 +1,160 @@
+global:
+  storageClass: local-path
+  clusterName: "kind-local"
+  cloud: "kind"
+telemetryStoreMigrator:
+  enableReplication: false
+  timeout: "20m"
+  env:
+    - name: SIGNOZ_LOCAL_DEV_MODE
+      value: "true"
+clickhouse:
+  enabled: true
+  zookeeper:
+    enabled: true
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+  persistence:
+    enabled: true
+    storageClass: local-path
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+  layout:
+    shardsCount: 1
+    replicasCount: 1
+otelCollector:
+  enabled: true
+  replicaCount: 1
+  env:
+    - name: SIGNOZ_LOCAL_DEV_MODE
+      value: "true"
+    - name: CLICKHOUSE_USER
+      valueFrom:
+        secretKeyRef:
+          name: signoz-secrets
+          key: clickhouse-user
+    - name: CLICKHOUSE_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: signoz-secrets
+          key: clickhouse-password
+    - name: CLICKHOUSE_HOST
+      valueFrom:
+        secretKeyRef:
+          name: signoz-secrets
+          key: clickhouse-host
+    - name: CLICKHOUSE_PORT
+      valueFrom:
+        secretKeyRef:
+          name: signoz-secrets
+          key: clickhouse-port
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "0.0.0.0:4317"
+          http:
+            endpoint: "0.0.0.0:4318"
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: 'ray-serve'
+              kubernetes_sd_configs:
+                - role: pod
+              relabel_configs:
+                - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+                  action: keep
+                  regex: ray-serve-app
+                - source_labels: [__meta_kubernetes_pod_ip]
+                  target_label: __address__
+                  replacement: '$1:8001'
+                - source_labels: [__meta_kubernetes_namespace]
+                  target_label: k8s_namespace
+                - source_labels: [__meta_kubernetes_pod_name]
+                  target_label: k8s_pod_name
+            - job_name: 'ray-cluster'
+              static_configs:
+                - targets: ['ray-head.ray-system.svc.cluster.local:8080']
+            - job_name: 'postgres'
+              static_configs:
+                - targets: ['app-postgres-r.databases.svc.cluster.local:9187']
+    processors:
+      batch:
+        send_batch_size: 1000
+        timeout: 10s
+      k8sattributes:
+        extract:
+          metadata:
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.deployment.name
+            - k8s.namespace.name
+            - k8s.node.name
+    exporters:
+      clickhousetraces:
+        datasource: "tcp://${env:CLICKHOUSE_USER}:${env:CLICKHOUSE_PASSWORD}@${env:CLICKHOUSE_HOST}:${env:CLICKHOUSE_PORT}/signoz_traces"
+      signozclickhousemetrics:
+        dsn: "tcp://${env:CLICKHOUSE_USER}:${env:CLICKHOUSE_PASSWORD}@${env:CLICKHOUSE_HOST}:${env:CLICKHOUSE_PORT}/signoz_metrics"
+      clickhouselogsexporter:
+        dsn: "tcp://${env:CLICKHOUSE_USER}:${env:CLICKHOUSE_PASSWORD}@${env:CLICKHOUSE_HOST}:${env:CLICKHOUSE_PORT}/signoz_logs"
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [k8sattributes, batch]
+          exporters: [clickhousetraces]
+        metrics:
+          receivers: [otlp, prometheus]
+          processors: [k8sattributes, batch]
+          exporters: [signozclickhousemetrics]
+        logs:
+          receivers: [otlp]
+          processors: [k8sattributes, batch]
+          exporters: [clickhouselogsexporter]
+frontend:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+queryService:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+  env:
+    - name: SIGNOZ_LOCAL_DEV_MODE
+      value: "true"
+    - name: SIGNOZ_TOKENIZER_JWT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: signoz-secrets
+          key: jwt-secret
+    - name: CLICKHOUSE_USER
+      valueFrom:
+        secretKeyRef:
+          name: signoz-secrets
+          key: clickhouse-user
+    - name: CLICKHOUSE_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: signoz-secrets
+          key: clickhouse-password
+    - name: CLICKHOUSE_HOST
+      valueFrom:
+        secretKeyRef:
+          name: signoz-secrets
+          key: clickhouse-host
+    - name: CLICKHOUSE_PORT
+      valueFrom:
+        secretKeyRef:
+          name: signoz-secrets
+          key: clickhouse-port

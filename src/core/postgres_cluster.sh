@@ -18,6 +18,8 @@ declare -A PG_MEMORY_LIMIT=( [kind]="1Gi" [eks]="2Gi" )
 declare -A OPERATOR_TIMEOUT=( [kind]="120" [eks]="300" )
 declare -A CLUSTER_WAIT_TIMEOUT=( [kind]="300" [eks]="900" )
 
+export PG_IMAGE="docker.io/athithya5354/postgresql:16.10-minimal-trixie"
+
 # === VALIDATION ===
 if [[ ! "${STORAGE_CLASS[$K8S_CLUSTER]+isset}" ]]; then
   echo "[ERROR] Unsupported K8S_CLUSTER='$K8S_CLUSTER'. Supported: kind, eks" >&2
@@ -70,7 +72,7 @@ metadata:
   namespace: databases
 spec:
   instances: ${PG_INSTANCES[$K8S_CLUSTER]}
-  imageName: ghcr.io/cloudnative-pg/postgresql:16.10-minimal-trixie
+  imageName: ${PG_IMAGE}
   storage:
     size: ${PG_STORAGE_SIZE[$K8S_CLUSTER]}
     storageClass: ${STORAGE_CLASS[$K8S_CLUSTER]}

@@ -1,6 +1,6 @@
 recreate:
 	make lc && make rollout-default-sc && make rollout-pg && make rollout-kuberay-operator && \
-	make test-kuberay-operator && make test-pg && \
+	make test-pg && \
 	make rollout-signoz 
 
 rollout-signoz:

@@ -1,4 +1,4 @@
-name: Build and Push NGINX SPA Image
+name: Build, Scan and Push NGINX SPA Image
 
 on:
   push:
@@ -19,13 +19,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify frontend assets exist
+        run: |
+          for f in src/services/frontend/{Dockerfile,nginx.conf,index.html}; do
+            [ -f "$f" ] || { echo "[ERROR] Missing $f"; exit 1; }
+          done
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build, Scan, Push SPA Image
+      - name: Build, Push, Scan SPA Image
         env:
           IMAGE_NAME: agentops-spa
           PUSH: "true"
@@ -34,5 +40,6 @@ jobs:
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
           AWS_REGION: ${{ vars.AWS_REGION }}
           ECR_REPO: ${{ vars.ECR_REPO }}
-        run: |
-          bash src/services/frontend/CI.sh
+          TRIVY_IMAGE: athithya5354/trivy:0.68.2
+          TRIVY_SEVERITY: HIGH,CRITICAL
+        run: bash src/services/frontend/CI.sh
