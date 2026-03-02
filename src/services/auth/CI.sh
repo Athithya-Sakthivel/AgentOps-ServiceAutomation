@@ -19,14 +19,15 @@ log(){ printf '\033[0;34m[INFO]\033[0m %s\n' "$*"; }
 err(){ printf '\033[0;31m[ERROR]\033[0m %s\n' "$*" >&2; exit 1; }
 
 cleanup(){
-  if [ -n "${BUILDER_NAME}" ]; then
+  if [ -n "${BUILDER_NAME:-}" ]; then
     docker buildx rm "${BUILDER_NAME}" 2>/dev/null || true
   fi
-  if [ -n "${LOCAL_BUILDER_NAME}" ]; then
+  if [ -n "${LOCAL_BUILDER_NAME:-}" ]; then
     docker buildx rm "${LOCAL_BUILDER_NAME}" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT TERM
 
 log "Starting Auth Service image build: ${IMAGE_NAME}:${IMAGE_TAG} (${REGISTRY_TYPE})"
 log "Input Severity Config: '${INPUT_SEVERITY}'"
@@ -41,18 +42,23 @@ if [ "${REGISTRY_TYPE}" = "ecr" ]; then
   [ -n "${ECR_REPO:-}" ] || err "ECR_REPO required for ECR"
   IMAGE_REF="${ECR_REPO}:${IMAGE_TAG}"
   log "Authenticating to ECR (${AWS_REGION})"
-  aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "$(echo "${ECR_REPO}" | cut -d'/' -f1)" >/dev/null 2>&1
+  if command -v aws &>/dev/null; then
+    aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "$(echo "${ECR_REPO}" | cut -d'/' -f1)" >/dev/null 2>&1 || err "ECR login failed"
+  else
+    log "awscli not found - assuming pre-authenticated Docker context"
+  fi
 else
   [ -n "${DOCKER_USERNAME:-}" ] || err "DOCKER_USERNAME required for Docker Hub"
+  [ -n "${DOCKER_PASSWORD:-}" ] || err "DOCKER_PASSWORD required for Docker Hub"
   IMAGE_REF="${DOCKER_USERNAME}/${IMAGE_NAME}:${IMAGE_TAG}"
   log "Authenticating to Docker Hub"
-  printf '%s\n' "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin >/dev/null 2>&1
+  printf '%s\n' "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin >/dev/null 2>&1 || err "Docker Hub login failed"
 fi
 
-CACHE_FROM="type=gha,scope=${IMAGE_NAME}"
-CACHE_TO="type=gha,scope=${IMAGE_NAME},mode=max"
+CACHE_FROM="type=gha,scope=auth-service-${IMAGE_NAME}"
+CACHE_TO="type=gha,scope=auth-service-${IMAGE_NAME},mode=max"
 
-CURRENT_ARCH=$(docker info --format '{{.Architecture}}')
+CURRENT_ARCH=$(docker info --format '{{.Architecture}}' 2>/dev/null || echo "amd64")
 SCAN_PLATFORM="linux/${CURRENT_ARCH}"
 
 log "Building local image for scan (platform: ${SCAN_PLATFORM})"
@@ -62,20 +68,22 @@ docker buildx build \
   --file "${DOCKERFILE_PATH}" \
   --cache-from "${CACHE_FROM}" \
   --load \
-  "${BUILD_CONTEXT}"
+  "${BUILD_CONTEXT}" || err "Local build failed"
 
 log "Scanning local image with Trivy (threshold: ${INPUT_SEVERITY})"
 docker run --rm \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   "${TRIVY_IMAGE}" \
   image --exit-code 1 --severity "${INPUT_SEVERITY}" --no-progress "${IMAGE_REF}" || {
+  log "Trivy scan details:"
+  docker run --rm -v /var/run/docker.sock:/var/run/docker.sock:ro "${TRIVY_IMAGE}" image --severity "${INPUT_SEVERITY}" --format table "${IMAGE_REF}" >&2
   err "Trivy scan failed (threshold: ${INPUT_SEVERITY}). Fix vulnerabilities before proceeding."
 }
 
 if [ "${PUSH}" = "true" ]; then
   log "Pushing multi-arch image: ${IMAGE_REF} (platforms: ${PLATFORMS})"
   BUILDER_NAME="auth-builder-$$"
-  docker buildx create --name "${BUILDER_NAME}" --driver docker-container --use >/dev/null
+  docker buildx create --name "${BUILDER_NAME}" --driver docker-container --use --bootstrap >/dev/null || err "Builder creation failed"
   
   docker buildx build \
     --builder "${BUILDER_NAME}" \
@@ -87,7 +95,7 @@ if [ "${PUSH}" = "true" ]; then
     --provenance=true \
     --sbom=true \
     --push \
-    "${BUILD_CONTEXT}"
+    "${BUILD_CONTEXT}" || err "Multi-arch push failed"
   log "Push complete: ${IMAGE_REF}"
 else
   log "PUSH=false, skipping push"

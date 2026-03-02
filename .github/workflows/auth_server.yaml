@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - develop
     paths:
       - src/services/auth/**
   workflow_dispatch:
@@ -17,10 +16,20 @@ on:
         options:
           - staging
           - production
+      severity:
+        description: 'Trivy severity threshold'
+        required: false
+        default: 'CRITICAL'
+        type: choice
+        options:
+          - CRITICAL
+          - HIGH
+          - MEDIUM
 
 permissions:
   contents: read
   id-token: write
+  actions: write
 
 concurrency:
   group: auth-image-${{ github.ref }}
@@ -28,13 +37,15 @@ concurrency:
 
 jobs:
   lint-test-build-push-scan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'staging' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Verify auth service files exist
         run: |
@@ -42,18 +53,24 @@ jobs:
             [ -f "$f" ] || { echo "[ERROR] Missing $f"; exit 1; }
           done
 
-      - name: Set up Python
+      - name: Set up Python 3.13
         uses: actions/setup-python@v5
         with:
           python-version: '3.13.12'
           cache: 'pip'
+          cache-dependency-path: src/services/auth/requirements.txt
 
       - name: Install linting dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install ruff==0.9.4 mypy==1.15.0
+          pip install ruff==0.15.4 mypy==1.15.0
 
-      - name: Run Ruff linting
+      - name: Run Ruff auto-fix (apply safe fixes)
+        run: |
+          ruff check src/services/auth/auth_server.py --fix
+          ruff format src/services/auth/auth_server.py
+
+      - name: Run Ruff check (fail on unfixable issues only)
         run: |
           ruff check src/services/auth/auth_server.py
           ruff format src/services/auth/auth_server.py --check
@@ -62,30 +79,45 @@ jobs:
         run: |
           mypy src/services/auth/auth_server.py --ignore-missing-imports --no-error-summary
 
-      - name: Set up QEMU
-        if: ${{ contains(vars.PLATFORMS, 'arm64') }}
+      - name: Commit auto-fixes (if any)
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          if git diff --quiet; then
+            echo "No lint fixes needed"
+          else
+            git add src/services/auth/auth_server.py
+            git commit -m "chore: auto-fix ruff linting issues [skip ci]"
+            git push
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU for multi-arch
+        if: contains(vars.PLATFORMS || 'linux/amd64,linux/arm64', 'arm64')
         uses: docker/setup-qemu-action@v3.7.0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3.12.0
 
       - name: Configure AWS OIDC for ECR
-        if: ${{ vars.REGISTRY_TYPE == 'ecr' }}
-        uses: aws-actions/configure-aws-credentials@v4
+        if: vars.REGISTRY_TYPE == 'ecr'
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-south-1' }}
 
-      - name: Build, Push, Scan Auth Image
+      - name: Build, Scan, Push Auth Image
         env:
           IMAGE_NAME: agentops-auth
-          PUSH: "true"
+          IMAGE_TAG: ${{ github.sha }}-${{ github.run_number }}
+          PUSH: ${{ (github.ref_name == 'main' || github.ref_name == 'develop') && 'true' || 'false' }}
           REGISTRY_TYPE: ${{ vars.REGISTRY_TYPE || 'dockerhub' }}
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
           ECR_REPO: ${{ vars.ECR_REPO }}
           TRIVY_IMAGE: aquasec/trivy@sha256:3d1f862cb6c4fe13c1506f96f816096030d8d5ccdb2380a3069f7bf07daa86aa
-          TRIVY_SEVERITY: CRITICAL
+          TRIVY_SEVERITY: ${{ github.event.inputs.severity || 'CRITICAL' }}
           PLATFORMS: ${{ vars.PLATFORMS || 'linux/amd64,linux/arm64' }}
         run: bash src/services/auth/CI.sh
