@@ -2,7 +2,7 @@
 set -euo pipefail
 
 IMAGE_NAME="${IMAGE_NAME:-agentops-spa}"
-IMAGE_TAG="${IMAGE_TAG:-staging-multiarch-v2}"
+IMAGE_TAG="${IMAGE_TAG:-staging-multiarch-v1}"
 BUILD_CONTEXT="${BUILD_CONTEXT:-src/services/frontend}"
 DOCKERFILE_PATH="${DOCKERFILE_PATH:-${BUILD_CONTEXT}/Dockerfile}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
@@ -22,6 +22,7 @@ trap cleanup EXIT
 
 log "Starting SPA image build: ${IMAGE_NAME}:${IMAGE_TAG} (${REGISTRY_TYPE})"
 log "Input Severity Config: '${INPUT_SEVERITY}'"
+log "Requested Platforms: ${PLATFORMS}"
 
 [ -f "${DOCKERFILE_PATH}" ] || err "Dockerfile not found: ${DOCKERFILE_PATH}"
 [ -d "${BUILD_CONTEXT}" ] || err "Build context not found: ${BUILD_CONTEXT}"
@@ -45,10 +46,13 @@ fi
 CACHE_FROM="type=gha,scope=${IMAGE_NAME}"
 CACHE_TO="type=gha,scope=${IMAGE_NAME},mode=max"
 
-log "Building multi-arch image (cache enabled): ${IMAGE_REF}"
+CURRENT_ARCH=$(docker info --format '{{.Architecture}}')
+SCAN_PLATFORM="linux/${CURRENT_ARCH}"
+
+log "Building local image for scan (platform: ${SCAN_PLATFORM})"
 docker buildx build \
   --builder "${BUILDER_NAME}" \
-  --platform "${PLATFORMS}" \
+  --platform "${SCAN_PLATFORM}" \
   --tag "${IMAGE_REF}" \
   --file "${DOCKERFILE_PATH}" \
   --cache-from "${CACHE_FROM}" \
@@ -67,7 +71,7 @@ docker run --rm \
 }
 
 if [ "${PUSH}" = "true" ]; then
-  log "Pushing image: ${IMAGE_REF}"
+  log "Pushing multi-arch image: ${IMAGE_REF} (platforms: ${PLATFORMS})"
   docker buildx build \
     --builder "${BUILDER_NAME}" \
     --platform "${PLATFORMS}" \
