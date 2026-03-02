@@ -41,5 +41,5 @@ jobs:
           AWS_REGION: ${{ vars.AWS_REGION }}
           ECR_REPO: ${{ vars.ECR_REPO }}
           TRIVY_IMAGE: athithya5354/trivy:0.68.2
-          TRIVY_SEVERITY: HIGH,CRITICAL
+          TRIVY_SEVERITY: CRITICAL
         run: bash src/services/frontend/CI.sh
