@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - develop
     paths:
       - src/services/auth/**
   workflow_dispatch:
@@ -65,12 +66,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install ruff==0.15.4 mypy==1.15.0
 
-      - name: Run Ruff auto-fix (apply safe fixes)
+      - name: Run Ruff auto-fix
         run: |
           ruff check src/services/auth/auth_server.py --fix
           ruff format src/services/auth/auth_server.py
 
-      - name: Run Ruff check (fail on unfixable issues only)
+      - name: Run Ruff check
         run: |
           ruff check src/services/auth/auth_server.py
           ruff format src/services/auth/auth_server.py --check
@@ -79,7 +80,7 @@ jobs:
         run: |
           mypy src/services/auth/auth_server.py --ignore-missing-imports --no-error-summary
 
-      - name: Commit auto-fixes (if any)
+      - name: Commit auto-fixes
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"

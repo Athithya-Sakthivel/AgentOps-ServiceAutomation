@@ -76,6 +76,11 @@ push-frontend:
 	git commit -m "updating nginx SPA image"
 	git push origin main
 
+push-auth:
+	git add .github src/services/auth/
+	git commit -m "updating auth server"
+	git push origin main
+
 rollout-valkey:
 	bash src/platform/valkey.sh --rollout
 
