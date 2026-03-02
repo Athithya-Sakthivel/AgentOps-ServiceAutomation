@@ -2,7 +2,7 @@
 set -euo pipefail
 
 IMAGE_NAME="${IMAGE_NAME:-agentops-spa}"
-IMAGE_TAG="${IMAGE_TAG:-staging-multiarch-v2}"
+IMAGE_TAG="${IMAGE_TAG:-staging-multiarch-v3}"
 BUILD_CONTEXT="${BUILD_CONTEXT:-src/services/frontend}"
 DOCKERFILE_PATH="${DOCKERFILE_PATH:-${BUILD_CONTEXT}/Dockerfile}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
