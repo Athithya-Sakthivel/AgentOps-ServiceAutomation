@@ -12,12 +12,19 @@ AWS_REGION="${AWS_REGION:-ap-south-1}"
 TRIVY_IMAGE="${TRIVY_IMAGE:-aquasec/trivy@sha256:3d1f862cb6c4fe13c1506f96f816096030d8d5ccdb2380a3069f7bf07daa86aa}"
 INPUT_SEVERITY="${TRIVY_SEVERITY:-CRITICAL}"
 
+BUILDER_NAME=""
+LOCAL_BUILDER_NAME=""
+
 log(){ printf '\033[0;34m[INFO]\033[0m %s\n' "$*"; }
 err(){ printf '\033[0;31m[ERROR]\033[0m %s\n' "$*" >&2; exit 1; }
 
 cleanup(){
-  docker buildx rm "${BUILDER_NAME}" 2>/dev/null || true
-  docker buildx rm "${LOCAL_BUILDER_NAME}" 2>/dev/null || true
+  if [ -n "${BUILDER_NAME}" ]; then
+    docker buildx rm "${BUILDER_NAME}" 2>/dev/null || true
+  fi
+  if [ -n "${LOCAL_BUILDER_NAME}" ]; then
+    docker buildx rm "${LOCAL_BUILDER_NAME}" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
 
@@ -46,12 +53,8 @@ CACHE_TO="type=gha,scope=${IMAGE_NAME},mode=max"
 CURRENT_ARCH=$(docker info --format '{{.Architecture}}')
 SCAN_PLATFORM="linux/${CURRENT_ARCH}"
 
-log "Building local image for scan (platform: ${SCAN_PLATFORM}) using native driver"
-LOCAL_BUILDER_NAME="spa-local-$$"
-docker buildx create --name "${LOCAL_BUILDER_NAME}" --driver docker --use >/dev/null
-
+log "Building local image for scan (platform: ${SCAN_PLATFORM})"
 docker buildx build \
-  --builder "${LOCAL_BUILDER_NAME}" \
   --platform "${SCAN_PLATFORM}" \
   --tag "${IMAGE_REF}" \
   --file "${DOCKERFILE_PATH}" \

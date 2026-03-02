@@ -46,6 +46,16 @@ jobs:
         if: ${{ contains(vars.PLATFORMS, 'arm64') }}
         uses: docker/setup-qemu-action@v3.7.0
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.12.0
+
+      - name: Configure AWS OIDC for ECR
+        if: ${{ vars.REGISTRY_TYPE == 'ecr' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
       - name: Build, Push, Scan SPA Image
         env:
           IMAGE_NAME: agentops-spa
