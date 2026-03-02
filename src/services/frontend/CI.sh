@@ -10,12 +10,13 @@ PUSH="${PUSH:-true}"
 REGISTRY_TYPE="${REGISTRY_TYPE:-dockerhub}"
 AWS_REGION="${AWS_REGION:-ap-south-1}"
 TRIVY_IMAGE="${TRIVY_IMAGE:-athithya5354/trivy:0.68.2}"
-TRIVY_SEVERITY="${TRIVY_SEVERITY:-CRITICAL}"
+INPUT_SEVERITY="${TRIVY_SEVERITY:-CRITICAL}"
 
 log(){ printf '\033[0;34m[INFO]\033[0m %s\n' "$*"; }
 err(){ printf '\033[0;31m[ERROR]\033[0m %s\n' "$*" >&2; exit 1; }
 
 log "Starting SPA image build: ${IMAGE_NAME}:${IMAGE_TAG} (${REGISTRY_TYPE})"
+log "Input Severity Config: '${INPUT_SEVERITY}'"
 
 [ -f "${DOCKERFILE_PATH}" ] || err "Dockerfile not found: ${DOCKERFILE_PATH}"
 [ -d "${BUILD_CONTEXT}" ] || err "Build context not found: ${BUILD_CONTEXT}"
@@ -29,7 +30,7 @@ docker buildx inspect --bootstrap >/dev/null
 if [ "${REGISTRY_TYPE}" = "ecr" ]; then
   [ -n "${ECR_REPO:-}" ] || err "ECR_REPO required for ECR"
   IMAGE_REF="${ECR_REPO}:${IMAGE_TAG}"
-  log "Authenticating to ECR"
+  log "Authenticating to ECR (${AWS_REGION})"
   aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "$(echo "${ECR_REPO}" | cut -d'/' -f1)"
 else
   [ -n "${DOCKER_USERNAME:-}" ] || err "DOCKER_USERNAME required for Docker Hub"
@@ -49,11 +50,10 @@ docker buildx build \
 log "Push complete: ${IMAGE_REF}"
 
 log "Scanning pushed image with Trivy (image: ${TRIVY_IMAGE})"
-EFFECTIVE_SEVERITY="${TRIVY_SEVERITY}"
-if [ "${GITHUB_EVENT_NAME:-push}" = "workflow_dispatch" ]; then
-  EFFECTIVE_SEVERITY="HIGH"
-  log "Workflow dispatch detected: adjusting severity threshold to HIGH"
-fi
+
+EFFECTIVE_SEVERITY="${INPUT_SEVERITY}"
+
+log "Effective Scan Threshold: ${EFFECTIVE_SEVERITY}"
 
 docker run --rm \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
