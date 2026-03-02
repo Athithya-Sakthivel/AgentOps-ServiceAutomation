@@ -3,10 +3,7 @@ line-length = 120
 
 [lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4"]
-ignore = [
-    "E501",
-    "F841"
-]
+ignore = ["E501", "F841"]
 
 [lint.isort]
 known-first-party = ["auth_server"]

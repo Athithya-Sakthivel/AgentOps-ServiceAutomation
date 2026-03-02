@@ -1,123 +1,71 @@
-name: Build, Scan and Push Auth Service Image
-
+name: CI for auth service
 on:
   push:
-    branches:
-      - main
-    paths:
-      - src/services/auth/**
+    branches: [main, develop]
+    paths: [src/services/auth/**]
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Target environment'
         required: true
-        default: 'staging'
         type: choice
-        options:
-          - staging
-          - production
+        options: [staging, production]
       severity:
-        description: 'Trivy severity threshold'
-        required: false
-        default: 'CRITICAL'
         type: choice
-        options:
-          - CRITICAL
-          - HIGH
-          - MEDIUM
+        options: [CRITICAL, HIGH, MEDIUM]
+        default: CRITICAL
 
 permissions:
-  contents: write
+  contents: read
   id-token: write
   actions: write
 
 concurrency:
-  group: auth-image-${{ github.ref }}
+  group: auth-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  lint-test-build-push-scan:
+  build:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'staging' }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
-      - name: Verify auth service files exist
-        run: |
-          for f in src/services/auth/{Dockerfile,auth_server.py,requirements.txt}; do
-            [ -f "$f" ] || { echo "[ERROR] Missing $f"; exit 1; }
-          done
-
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.13.12'
-          cache: 'pip'
+          cache: pip
           cache-dependency-path: src/services/auth/requirements.txt
 
-      - name: Install linting dependencies
+      - name: Lint
         run: |
-          python -m pip install --upgrade pip
           pip install ruff==0.15.4 mypy==1.15.0
-
-      - name: Run Ruff auto-fix
-        run: |
           ruff check src/services/auth/auth_server.py --fix
           ruff format src/services/auth/auth_server.py
-
-      - name: Run Ruff check
-        run: |
           ruff check src/services/auth/auth_server.py
           ruff format src/services/auth/auth_server.py --check
+          mypy src/services/auth/auth_server.py --ignore-missing-imports || true
 
-      - name: Run MyPy type checking
-        run: |
-          mypy src/services/auth/auth_server.py --ignore-missing-imports --no-error-summary
+      - uses: docker/setup-qemu-action@v3
+        if: contains(vars.PLATFORMS, 'arm64')
 
-      - name: Commit auto-fixes
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          if git diff --quiet; then
-            echo "No lint fixes needed"
-          else
-            git add src/services/auth/auth_server.py
-            git commit -m "chore: auto-fix ruff linting issues [skip ci]"
-            git push
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
 
-      - name: Set up QEMU for multi-arch
-        if: contains(vars.PLATFORMS || 'linux/amd64,linux/arm64', 'arm64')
-        uses: docker/setup-qemu-action@v3.7.0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3.12.0
-
-      - name: Configure AWS OIDC for ECR
+      - uses: aws-actions/configure-aws-credentials@v6
         if: vars.REGISTRY_TYPE == 'ecr'
-        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION || 'ap-south-1' }}
 
-      - name: Build, Scan, Push Auth Image
+      - name: Build and Push
         env:
-          IMAGE_NAME: agentops-auth
-          IMAGE_TAG: ${{ github.sha }}-${{ github.run_number }}
-          PUSH: ${{ (github.ref_name == 'main' || github.ref_name == 'develop') && 'true' || 'false' }}
+          IMAGE_TAG: ${{ github.sha }}
+          PUSH: ${{ github.ref_name == 'main' && 'true' || 'false' }}
           REGISTRY_TYPE: ${{ vars.REGISTRY_TYPE || 'dockerhub' }}
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-          AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
           ECR_REPO: ${{ vars.ECR_REPO }}
-          TRIVY_IMAGE: aquasec/trivy@sha256:3d1f862cb6c4fe13c1506f96f816096030d8d5ccdb2380a3069f7bf07daa86aa
           TRIVY_SEVERITY: ${{ github.event.inputs.severity || 'CRITICAL' }}
-          PLATFORMS: ${{ vars.PLATFORMS || 'linux/amd64,linux/arm64' }}
+          PLATFORMS: ${{ vars.PLATFORMS || 'linux/amd64' }}
         run: bash src/services/auth/CI.sh

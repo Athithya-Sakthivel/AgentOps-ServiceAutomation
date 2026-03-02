@@ -469,7 +469,6 @@ async def me(request: Request) -> dict:
         logger.error("jwt.decode.unexpected", extra={"error": str(e)})
         raise HTTPException(status_code=401, detail="Invalid token") from None
 
-
 @app.get("/logout", response_class=HTMLResponse)
 async def logout(request: Request) -> HTMLResponse:
     safe_front = f"{request.url.scheme}://{request.url.netloc}"
