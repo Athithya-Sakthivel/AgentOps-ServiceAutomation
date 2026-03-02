@@ -6,7 +6,7 @@ import os
 import signal
 import sys
 import time
-from typing import Optional
+from typing import AsyncGenerator, Optional
 from urllib.parse import quote_plus
 
 import asyncpg
@@ -230,7 +230,7 @@ def verify_jwt(token: str) -> dict:
     raise InvalidTokenError("No valid secret found")
 
 
-async def lifespan(app: FastAPI) -> None:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await init_db()
     yield
     if db_pool:
