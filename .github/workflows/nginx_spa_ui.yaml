@@ -1,0 +1,71 @@
+name: Build, Scan and Push NGINX SPA Image
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - src/services/frontend/**
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: spa-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-push-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'staging' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify frontend assets exist
+        run: |
+          for f in src/services/frontend/{Dockerfile,nginx.conf,index.html}; do
+            [ -f "$f" ] || { echo "[ERROR] Missing $f"; exit 1; }
+          done
+
+      - name: Set up QEMU
+        if: ${{ contains(vars.PLATFORMS, 'arm64') }}
+        uses: docker/setup-qemu-action@v3.7.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.12.0
+
+      - name: Configure AWS OIDC for ECR
+        if: ${{ vars.REGISTRY_TYPE == 'ecr' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Build, Push, Scan SPA Image
+        env:
+          IMAGE_NAME: agentops-spa
+          PUSH: "true"
+          REGISTRY_TYPE: ${{ vars.REGISTRY_TYPE || 'dockerhub' }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ECR_REPO: ${{ vars.ECR_REPO }}
+          TRIVY_IMAGE: aquasec/trivy@sha256:3d1f862cb6c4fe13c1506f96f816096030d8d5ccdb2380a3069f7bf07daa86aa
+          TRIVY_SEVERITY: CRITICAL
+          PLATFORMS: ${{ vars.PLATFORMS || 'linux/amd64,linux/arm64' }}
+        run: bash src/services/frontend/CI.sh
