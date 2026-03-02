@@ -2,7 +2,7 @@
 set -euo pipefail
 
 IMAGE_NAME="${IMAGE_NAME:-agentops-spa}"
-IMAGE_TAG="${IMAGE_TAG:-staging-multiarch-v1}"
+IMAGE_TAG="${IMAGE_TAG:-staging-multiarch-v2}"
 BUILD_CONTEXT="${BUILD_CONTEXT:-src/services/frontend}"
 DOCKERFILE_PATH="${DOCKERFILE_PATH:-${BUILD_CONTEXT}/Dockerfile}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
@@ -17,6 +17,7 @@ err(){ printf '\033[0;31m[ERROR]\033[0m %s\n' "$*" >&2; exit 1; }
 
 cleanup(){
   docker buildx rm "${BUILDER_NAME}" 2>/dev/null || true
+  docker buildx rm "${LOCAL_BUILDER_NAME}" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -26,10 +27,6 @@ log "Requested Platforms: ${PLATFORMS}"
 
 [ -f "${DOCKERFILE_PATH}" ] || err "Dockerfile not found: ${DOCKERFILE_PATH}"
 [ -d "${BUILD_CONTEXT}" ] || err "Build context not found: ${BUILD_CONTEXT}"
-
-BUILDER_NAME="spa-builder-$$"
-docker buildx create --name "${BUILDER_NAME}" --use --driver docker-container >/dev/null
-docker buildx inspect --bootstrap >/dev/null
 
 if [ "${REGISTRY_TYPE}" = "ecr" ]; then
   [ -n "${ECR_REPO:-}" ] || err "ECR_REPO required for ECR"
@@ -49,16 +46,16 @@ CACHE_TO="type=gha,scope=${IMAGE_NAME},mode=max"
 CURRENT_ARCH=$(docker info --format '{{.Architecture}}')
 SCAN_PLATFORM="linux/${CURRENT_ARCH}"
 
-log "Building local image for scan (platform: ${SCAN_PLATFORM})"
+log "Building local image for scan (platform: ${SCAN_PLATFORM}) using native driver"
+LOCAL_BUILDER_NAME="spa-local-$$"
+docker buildx create --name "${LOCAL_BUILDER_NAME}" --driver docker --use >/dev/null
+
 docker buildx build \
-  --builder "${BUILDER_NAME}" \
+  --builder "${LOCAL_BUILDER_NAME}" \
   --platform "${SCAN_PLATFORM}" \
   --tag "${IMAGE_REF}" \
   --file "${DOCKERFILE_PATH}" \
   --cache-from "${CACHE_FROM}" \
-  --cache-to "${CACHE_TO}" \
-  --provenance=true \
-  --sbom=true \
   --load \
   "${BUILD_CONTEXT}"
 
@@ -72,12 +69,18 @@ docker run --rm \
 
 if [ "${PUSH}" = "true" ]; then
   log "Pushing multi-arch image: ${IMAGE_REF} (platforms: ${PLATFORMS})"
+  BUILDER_NAME="spa-builder-$$"
+  docker buildx create --name "${BUILDER_NAME}" --driver docker-container --use >/dev/null
+  
   docker buildx build \
     --builder "${BUILDER_NAME}" \
     --platform "${PLATFORMS}" \
     --tag "${IMAGE_REF}" \
     --file "${DOCKERFILE_PATH}" \
     --cache-from "${CACHE_FROM}" \
+    --cache-to "${CACHE_TO}" \
+    --provenance=true \
+    --sbom=true \
     --push \
     "${BUILD_CONTEXT}"
   log "Push complete: ${IMAGE_REF}"
