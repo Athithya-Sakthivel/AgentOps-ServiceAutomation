@@ -1,0 +1,91 @@
+name: Build, Scan and Push Auth Service Image
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - src/services/auth/**
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: auth-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-test-build-push-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'staging' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify auth service files exist
+        run: |
+          for f in src/services/auth/{Dockerfile,auth_server.py,requirements.txt}; do
+            [ -f "$f" ] || { echo "[ERROR] Missing $f"; exit 1; }
+          done
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.12'
+          cache: 'pip'
+
+      - name: Install linting dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff==0.9.4 mypy==1.15.0
+
+      - name: Run Ruff linting
+        run: |
+          ruff check src/services/auth/auth_server.py
+          ruff format src/services/auth/auth_server.py --check
+
+      - name: Run MyPy type checking
+        run: |
+          mypy src/services/auth/auth_server.py --ignore-missing-imports --no-error-summary
+
+      - name: Set up QEMU
+        if: ${{ contains(vars.PLATFORMS, 'arm64') }}
+        uses: docker/setup-qemu-action@v3.7.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.12.0
+
+      - name: Configure AWS OIDC for ECR
+        if: ${{ vars.REGISTRY_TYPE == 'ecr' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Build, Push, Scan Auth Image
+        env:
+          IMAGE_NAME: agentops-auth
+          PUSH: "true"
+          REGISTRY_TYPE: ${{ vars.REGISTRY_TYPE || 'dockerhub' }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ECR_REPO: ${{ vars.ECR_REPO }}
+          TRIVY_IMAGE: aquasec/trivy@sha256:3d1f862cb6c4fe13c1506f96f816096030d8d5ccdb2380a3069f7bf07daa86aa
+          TRIVY_SEVERITY: CRITICAL
+          PLATFORMS: ${{ vars.PLATFORMS || 'linux/amd64,linux/arm64' }}
+        run: bash src/services/auth/CI.sh
