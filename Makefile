@@ -29,6 +29,13 @@ tree:
 	tree -a -I '.git|.venv|.repos|__pycache__|venv|commands.sh|raw_data|.venv-pulumi|.venv2|archive|tmp.md|docs|models|tmp|raw|chunked'
 
 
+
+
+
+
+
+
+
 s3:
 	ACCOUNT_ID=$$(aws sts get-caller-identity --query Account --output text); \
 	if [ -z "$$S3_BUCKET" ]; then \

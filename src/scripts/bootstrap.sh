@@ -46,9 +46,3 @@ python3 -m venv .venv && source .venv/bin/activate && pip install "SQLAlchemy==2
 
 curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
-
-
-
-unset TMPDIR && sudo mkdir -p /models && sudo chown -R $USER:$USER /models && \
-python3 -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='unsloth/Qwen3-1.7B-GGUF', filename='Qwen3-1.7B-Q4_K_M.gguf', local_dir='/models')" && \
-chmod 777 /models/Qwen3-1.7B-Q4_K_M.gguf
