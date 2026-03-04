@@ -1,4 +1,4 @@
-## Executive summary of src/terraform/ 
+# AWS Infrastructure Architecture (AgentOps-ServiceAutomation)
 
 This repository implements a single-account, AWS-focused infrastructure using [Opentofu](https://opentofu.org/) to provision a private Amazon Elastic Kubernetes Service cluster with two purpose-built node pools (system, inference), container registries via Amazon Elastic Container Registry, and remote state stored in Amazon S3 with state locking through Amazon DynamoDB.
 
@@ -45,7 +45,7 @@ Key operational characteristics:
 
   * `modules/vpc.tf` — VPC, private subnets, route tables, IGW for IPv6, egress-only IGW, and CIDR sizing constants.
   * `modules/security.tf` — security groups, minimal IAM instance policies attached via node roles, and baseline network ACL guidance.
-  * `modules/endpoints.tf` — VPC endpoints: interface endpoints for `ecr.api`, `ecr.dkr`, `sts`, `bedrock` (optional if used); gateway endpoint for `s3`; optional SSM endpoint.
+  * `modules/endpoints.tf` — VPC endpoints: interface endpoints for `ecr.api`, `ecr.dkr`, `sts`, `bedrock`; gateway endpoint for `s3`; optional SSM endpoint.
   * `modules/eks.tf` — EKS cluster, OIDC provider, node groups (system + inference), addons (CNI, EBS CSI, kube-addons).
   * `modules/iam.tf` — IAM roles and policies: cluster role, node role, EBS CSI IRSA role, cluster autoscaler IRSA role, inference IRSA role (Bedrock invocation), CI ECR push role.
   * `modules/ecr.tf` — ECR repositories and lifecycle policies.
@@ -180,19 +180,5 @@ These are hard guarantees and assumptions enforced by the configuration and oper
 * IAM least privilege: narrow ECR push policy for CI; Bedrock invocation rights scoped to required model ARNs.
 * Network isolation: no public subnets, private EKS endpoint if desired, Cloudflare Tunnel for managed ingress.
 * Auditability: Terraform plans and `run.sh` logs retained in CI artifacts for HR/audit review.
-
----
-
-## Known tradeoffs and mitigations
-
-* **Tradeoff:** No NAT reduces outbound control and compatibility for arbitrary public APIs.
-
-  * **Mitigation:** Add explicit interface endpoints only for services required (Bedrock, STS, ECR) to keep cost down and reachability guaranteed.
-* **Tradeoff:** Two AZs vs three AZs.
-
-  * **Mitigation:** Two AZs chosen to balance cost and resilience; cluster and application HA must be tested to tolerate single AZ loss; recommend replication strategy for ClickHouse/Postgres to avoid single AZ data loss.
-* **Tradeoff:** Managed node groups + Cluster Autoscaler vs Karpenter.
-
-  * **Mitigation:** Managed node groups chosen for determinism and lower operational surface; use Cluster Autoscaler tuning and correct min buffers for low-latency scaling.
 
 ---
