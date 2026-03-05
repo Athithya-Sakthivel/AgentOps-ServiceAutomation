@@ -125,3 +125,4 @@ Thumbs.db
 models
 *.onnx
 temp.sh
+.plans

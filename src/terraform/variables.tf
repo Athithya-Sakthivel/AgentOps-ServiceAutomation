@@ -83,7 +83,7 @@ variable "system_nodegroup" {
     max_size      = number
   })
   default = {
-    instance_type = "m6i.large"  // conservative general-purpose, no GPU
+    instance_type = "m6i.large" // conservative general-purpose, no GPU
     min_size      = 2
     desired_size  = 2
     max_size      = 3
@@ -99,8 +99,8 @@ variable "inference_nodegroup" {
     max_size      = number
   })
   default = {
-    instance_type = "c6i.xlarge"  // compute-optimized baseline; tune to observed CPU load
-    min_size      = 2              // keep warm capacity to reduce cold-start latency
+    instance_type = "c6i.xlarge" // compute-optimized baseline; tune to observed CPU load
+    min_size      = 2            // keep warm capacity to reduce cold-start latency
     desired_size  = 2
     max_size      = 6
   }
@@ -126,7 +126,7 @@ variable "ebs_volume_type" {
 
 variable "ecr_repositories" {
   description = "Map of ECR repository logical names to repo names. Non-secret."
-  type = map(string)
+  type        = map(string)
   default = {
     frontend = "agentops-frontend"
     backend  = "agentops-backend"
@@ -136,17 +136,17 @@ variable "ecr_repositories" {
 variable "cluster_autoscaler" {
   description = "Cluster Autoscaler tuning params. These values are conservative starting points for a 2-AZ cluster."
   type = object({
-    enabled                  = bool
-    scan_interval_seconds    = number
-    max_node_provision_time  = number  // in seconds
-    expander                 = string
+    enabled                    = bool
+    scan_interval_seconds      = number
+    max_node_provision_time    = number // in seconds
+    expander                   = string
     balance_similar_nodegroups = bool
   })
   default = {
-    enabled                  = true
-    scan_interval_seconds    = 10
-    max_node_provision_time  = 600    // 10 minutes
-    expander                 = "least-waste"
+    enabled                    = true
+    scan_interval_seconds      = 10
+    max_node_provision_time    = 600 // 10 minutes
+    expander                   = "least-waste"
     balance_similar_nodegroups = true
   }
 }

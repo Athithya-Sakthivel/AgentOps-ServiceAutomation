@@ -1,7 +1,8 @@
-// modules/vpc.tf
-// Executable OpenTofu/Terraform module compatible with OpenTofu v1.11.5 and hashicorp/aws provider 6.x (>=6.34.0).
-// Produces a dual-stack, NAT-free VPC with exactly two private subnets (one per AZ), an egress-only IGW for IPv6,
-// route tables and associations. Do not add NAT gateways in this module (project invariant).
+// src/terraform/modules/vpc/main.tf
+// NAT-free, dual-stack VPC module compatible with OpenTofu v1.11.5 and hashicorp/aws v6.x.
+// - Exactly two private dual-stack subnets (one per AZ).
+// - Egress-only IGW for IPv6.
+// - No NAT gateways.
 
 variable "vpc_cidr" {
   type        = string
@@ -39,14 +40,15 @@ variable "tags" {
   default     = {}
 }
 
-# Use two AZs deterministically
 data "aws_availability_zones" "available" {
   state = "available"
 }
 
 locals {
-  azs = slice(data.aws_availability_zones.available.names, 0, 2)
-  subnet_count = length(var.private_subnet_cidrs)  # should be 2
+  azs          = slice(data.aws_availability_zones.available.names, 0, 2)
+  subnet_count = length(var.private_subnet_cidrs)
+  name_tag     = lookup(var.tags, "Name", "agentops-vpc")
+  env_tag      = lookup(var.tags, "Environment", "prod")
 }
 
 resource "aws_vpc" "this" {
@@ -54,52 +56,57 @@ resource "aws_vpc" "this" {
   enable_dns_support               = true
   enable_dns_hostnames             = true
   assign_generated_ipv6_cidr_block = var.assign_ipv6_cidr_block
-  tags = merge({"Name" = "${var.tags["Name"] != null ? var.tags["Name"] : "agentops-vpc"}}, var.tags)
+
+  tags = merge(
+    { "Name" = local.name_tag, "Environment" = local.env_tag },
+    var.tags
+  )
 }
 
-# Wait for AWS to allocate the IPv6 block (if enabled) — subnet IPv6 cidrs derive from this.
-# Create private subnets: one per AZ using provided IPv4 CIDRs and derived IPv6 /64s from the VPC /56.
+# Create private subnets: explicit IPv4 cidr (from input) and deterministic IPv6 cidr carved from VPC IPv6 block.
 resource "aws_subnet" "private" {
   count = local.subnet_count
 
-  vpc_id                             = aws_vpc.this.id
-  cidr_block                         = var.private_subnet_cidrs[count.index]
-  availability_zone                  = local.azs[count.index]
-  map_public_ip_on_launch            = false
-  assign_ipv6_address_on_creation    = true
-  ipv6_cidr_block                    = cidrsubnet(aws_vpc.this.ipv6_cidr_block, 8, count.index) # derives /64s from /56
+  vpc_id                  = aws_vpc.this.id
+  cidr_block              = var.private_subnet_cidrs[count.index]
+  availability_zone       = local.azs[count.index]
+  map_public_ip_on_launch = false
+
+  # carve a /64 from the VPC-provided IPv6 /56 using cidrsubnet(aws_vpc.this.ipv6_cidr_block, 8, count.index)
+  # aws_vpc.this.ipv6_cidr_block is provided by AWS when assign_generated_ipv6_cidr_block = true
+  ipv6_cidr_block                 = cidrsubnet(aws_vpc.this.ipv6_cidr_block, 8, count.index)
+  assign_ipv6_address_on_creation = true
 
   tags = merge(
     {
       Name        = "agentops-private-${local.azs[count.index]}"
-      Environment = var.tags["Environment"] != null ? var.tags["Environment"] : "prod"
+      Environment = local.env_tag
     },
     var.tags
   )
 }
 
-# Route table for private subnets (IPv6 route to egress-only IGW)
+# Private route table (attach IPv6 default route to egress-only IGW)
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.this.id
-  tags = merge({"Name" = "agentops-private-rt"}, var.tags)
+  tags   = merge({ "Name" = "agentops-private-rt", "Environment" = local.env_tag }, var.tags)
 }
 
-# Egress-only IGW for IPv6 (enables outbound IPv6 only)
 resource "aws_egress_only_internet_gateway" "this" {
   vpc_id = aws_vpc.this.id
-  tags   = merge({"Name" = "agentops-egress-only-igw"}, var.tags)
+  tags   = merge({ "Name" = "agentops-egress-only-igw", "Environment" = local.env_tag }, var.tags)
 }
 
-# IPv6 default route to egress-only IGW
+# IPv6 default route via egress-only IGW
 resource "aws_route" "ipv6_egress" {
-  route_table_id               = aws_route_table.private.id
-  ipv6_cidr_block              = "::/0"
-  egress_only_internet_gateway_id = aws_egress_only_internet_gateway.this.id
+  route_table_id              = aws_route_table.private.id
+  destination_ipv6_cidr_block = "::/0"
+  egress_only_gateway_id      = aws_egress_only_internet_gateway.this.id
 
   depends_on = [aws_egress_only_internet_gateway.this]
 }
 
-# Associate the private route table with each private subnet
+# Associate route table with each private subnet
 resource "aws_route_table_association" "private_assoc" {
   count = local.subnet_count
 
@@ -109,36 +116,36 @@ resource "aws_route_table_association" "private_assoc" {
 
 # Outputs
 output "vpc_id" {
-  description = "The ID of the VPC."
+  description = "VPC ID"
   value       = aws_vpc.this.id
 }
 
 output "private_subnet_ids" {
-  description = "List of private subnet IDs (order corresponds to selected AZs)."
+  description = "Private subnet IDs (one per AZ, order matches aws_availability_zones slice(0,2))"
   value       = [for s in aws_subnet.private : s.id]
 }
 
 output "private_subnet_ipv4_cidrs" {
-  description = "List of private subnet IPv4 CIDRs."
+  description = "IPv4 CIDRs of private subnets"
   value       = [for s in aws_subnet.private : s.cidr_block]
 }
 
 output "private_subnet_ipv6_cidrs" {
-  description = "List of private subnet IPv6 CIDRs (/64 derived from VPC /56)."
+  description = "IPv6 CIDRs assigned to private subnets (carved from VPC IPv6 block)"
   value       = [for s in aws_subnet.private : s.ipv6_cidr_block]
 }
 
 output "ipv6_cidr_block" {
-  description = "The IPv6 CIDR block assigned to the VPC (AWS-provided /56)."
+  description = "VPC IPv6 CIDR block (if assigned by AWS). May be computed after apply."
   value       = aws_vpc.this.ipv6_cidr_block
 }
 
 output "egress_only_igw_id" {
-  description = "Egress-only Internet Gateway ID for IPv6 outbound."
+  description = "Egress-only IGW ID"
   value       = aws_egress_only_internet_gateway.this.id
 }
 
 output "availability_zones" {
-  description = "The two Availability Zones selected for this VPC/subnets."
+  description = "Two AZs selected"
   value       = local.azs
 }
