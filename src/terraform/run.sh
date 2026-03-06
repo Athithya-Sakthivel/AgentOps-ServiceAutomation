@@ -30,15 +30,6 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-# src/terraform/run.sh — final production-ready script
-# Key changes:
-#  - Do not redirect command outputs to temp files; stream stdout/stderr to terminal.
-#  - Keep a persistent plan file under src/terraform/.plans/<env>.tfplan.
-#  - Clear, single-line command logs and concise success/failure messages.
-#  - Ensure commands run from ${STACK_DIR} so `tofu init/plan/validate` operate in the right directory.
-# Requirements: aws, tofu (OpenTofu), python3 in PATH. Uses AWS env/profile for credentials.
-
-# ---- Config / defaults ----
 STACK_DIR="$(cd "$(dirname "$0")" && pwd)"   # src/terraform
 AWS_REGION="${AWS_DEFAULT_REGION:-ap-south-1}"
 

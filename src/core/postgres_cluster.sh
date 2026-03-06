@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
+# src/core/postgres_cluster.sh
+# Deterministic CNPG + Postgres rollout script.
+# - Dynamically substitutes CNPG operator image from $CNPG_IMAGE at apply time.
+# - Does NOT mutate archived operator manifest on disk.
+# - Compatible with kind or eks (controlled by K8S_CLUSTER env var).
 set -euo pipefail
 
 # === CONFIGURATION ===
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly MANIFEST_DIR="${SCRIPT_DIR}/../manifests/postgres"
-readonly ARCHIVE_DIR=src/scripts/archive
+readonly ARCHIVE_DIR="src/scripts/archive"
 readonly K8S_CLUSTER="${K8S_CLUSTER:-kind}"
 
-# === STRONG DEFAULTS (Must match default_storage_class.sh) ===
+# === STRONG DEFAULTS ===
 declare -A STORAGE_CLASS=( [kind]="local-path" [eks]="gp3" )
 declare -A PG_INSTANCES=( [kind]="1" [eks]="3" )
 declare -A PG_STORAGE_SIZE=( [kind]="5Gi" [eks]="20Gi" )
@@ -18,7 +23,9 @@ declare -A PG_MEMORY_LIMIT=( [kind]="1Gi" [eks]="2Gi" )
 declare -A OPERATOR_TIMEOUT=( [kind]="120" [eks]="300" )
 declare -A CLUSTER_WAIT_TIMEOUT=( [kind]="300" [eks]="900" )
 
-export PG_IMAGE="docker.io/athithya5354/postgresql:16.10-minimal-trixie"
+# Production-ready pinned defaults (override via env)
+export PG_IMAGE="${PG_IMAGE:-docker.io/athithya5354/postgresql:16.10-minimal-trixie}"
+export CNPG_IMAGE="${CNPG_IMAGE:-docker.io/athithya5354/cloudnative-pg:1.28.1}"  # to replace line 19370,19377 in src/scripts/archive/cnpg-1.28.1.yaml
 
 # === VALIDATION ===
 if [[ ! "${STORAGE_CLASS[$K8S_CLUSTER]+isset}" ]]; then
@@ -26,16 +33,16 @@ if [[ ! "${STORAGE_CLASS[$K8S_CLUSTER]+isset}" ]]; then
   exit 1
 fi
 
-# === LOGGING ===
-log() { printf '[%s] [%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$K8S_CLUSTER" "$*" >&2; }
-fatal() { printf '[ERROR] [%s] %s\n' "$K8S_CLUSTER" "$*" >&2; exit 1; }
-require_bin() { command -v "$1" >/dev/null 2>&1 || fatal "$1 not found in PATH"; }
+# === LOGGING / HELPERS ===
+log()    { printf '[%s] [%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$K8S_CLUSTER" "$*" >&2; }
+fatal()  { printf '[ERROR] [%s] %s\n' "$K8S_CLUSTER" "$*" >&2; exit 1; }
+require_bin(){ command -v "$1" >/dev/null 2>&1 || fatal "$1 not found in PATH"; }
 
 # === RENDER MANIFESTS ===
 render_manifests() {
   log "rendering manifests for K8S_CLUSTER=$K8S_CLUSTER"
   mkdir -p "${MANIFEST_DIR}"
-  
+
   cat > "${MANIFEST_DIR}/namespaces.yaml" <<'EOFNS'
 apiVersion: v1
 kind: Namespace
@@ -129,18 +136,43 @@ EOFK
 }
 
 # === OPERATOR MANAGEMENT ===
+# Apply the archived operator manifest, but first substitute operator image with $CNPG_IMAGE.
+# This avoids editing the archived file and keeps apply deterministic.
 apply_operator() {
+  require_bin kubectl
   local operator_manifest="${ARCHIVE_DIR}/cnpg-1.28.1.yaml"
   [[ -f "${operator_manifest}" ]] || fatal "operator manifest missing: ${operator_manifest}"
-  
-  log "applying CNPG operator (server-side apply)"
-  if kubectl apply --server-side --force-conflicts -f "${operator_manifest}" >/dev/null 2>&1; then
+
+  log "preparing operator manifest with CNPG_IMAGE=${CNPG_IMAGE}"
+  # create temporary file and ensure cleanup
+  local tmp=""
+  tmp="$(mktemp)" || fatal "mktemp failed"
+  trap '[[ -n "${tmp:-}" ]] && rm -f "$tmp"' RETURN
+
+  # Escape ampersand and backslashes in CNPG_IMAGE for safe sed replacement
+  local escaped
+  escaped="$(printf '%s' "$CNPG_IMAGE" | sed -e 's/[\/&]/\\&/g')"
+
+  # Replace occurrences of the upstream operator image tag with the provided CNPG_IMAGE.
+  # Pattern: ghcr.io/cloudnative-pg/cloudnative-pg:<anything-not-space-or-quote>
+  sed -E "s|ghcr.io/cloudnative-pg/cloudnative-pg:[^[:space:]\"'']*|${escaped}|g" "${operator_manifest}" > "${tmp}"
+
+  log "applying CNPG operator (server-side apply) from substituted manifest"
+  if kubectl apply --server-side --force-conflicts -f "${tmp}" >/dev/null 2>&1; then
+    log "operator applied (server-side)"
     return 0
   fi
-  log "server-side apply failed, retrying with normal apply"
-  kubectl apply -f "${operator_manifest}" || fatal "operator apply failed"
+
+  log "server-side apply failed, falling back to normal apply"
+  if kubectl apply -f "${tmp}" >/dev/null 2>&1; then
+    log "operator applied (client-side)"
+    return 0
+  fi
+
+  fatal "operator apply failed"
 }
 
+# === WAIT HELPERS ===
 wait_deployment() {
   local ns="$1" name="$2" timeout="$3"
   log "waiting for deployment ${name} in ${ns} (timeout ${timeout}s)"
@@ -170,35 +202,35 @@ dump_diagnostics() {
 # === ROLLOUT ===
 rollout() {
   require_bin kubectl
-  
+
   render_manifests
   apply_operator
-  
+
   if ! kubectl get namespace cnpg-system >/dev/null 2>&1; then
     kubectl create namespace cnpg-system --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   fi
-  
+
   wait_deployment "cnpg-system" "cnpg-controller-manager" "${OPERATOR_TIMEOUT[$K8S_CLUSTER]}"
-  
+
   log "applying cluster manifests via kustomize"
   if ! kubectl apply -k "${MANIFEST_DIR}" >/dev/null 2>&1; then
     log "kustomize apply failed; showing verbose output"
     kubectl apply -k "${MANIFEST_DIR}" -v=6 || true
   fi
-  
+
   log "waiting for Cluster CR Ready (timeout ${CLUSTER_WAIT_TIMEOUT[$K8S_CLUSTER]}s)"
   if ! kubectl -n databases wait --for=condition=Ready "cluster/app-postgres" --timeout="${CLUSTER_WAIT_TIMEOUT[$K8S_CLUSTER]}s" >/dev/null 2>&1; then
     log "Cluster did not become Ready within ${CLUSTER_WAIT_TIMEOUT[$K8S_CLUSTER]}s"
     dump_diagnostics
     fatal "cluster app-postgres not Ready"
   fi
-  
+
   local svc host port
   svc=$(kubectl -n databases get svc -l cnpg.io/cluster=app-postgres -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
   [[ -z "${svc}" ]] && svc="app-postgres"
   host="${svc}.databases.svc.cluster.local"
   port="5432"
-  
+
   cat <<EOFCONNECTION
 
 [SUCCESS] Rollout complete for K8S_CLUSTER=$K8S_CLUSTER
@@ -236,21 +268,19 @@ case "${1:-}" in
     dump_diagnostics
     ;;
   --help|-h)
-    cat <<EOFHELP
+    cat <<'EOFHELP'
 Usage: $0 [OPTION]
 
 Environment variables:
   K8S_CLUSTER  Cluster type: 'kind' or 'eks' (default: kind)
+  PG_IMAGE     Postgres runtime image (overrides default)
+  CNPG_IMAGE   CNPG operator image (overrides default)
 
 Options:
   --rollout      Apply operator and Postgres cluster
   --render-only  Render manifests to disk without applying
   --diagnose     Dump diagnostic information
   --help, -h     Show this help message
-
-Examples:
-  K8S_CLUSTER=kind bash $0 --rollout
-  K8S_CLUSTER=eks bash $0 --rollout
 EOFHELP
     ;;
   *)
