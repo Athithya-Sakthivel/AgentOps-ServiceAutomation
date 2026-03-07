@@ -5,5 +5,9 @@ terraform {
       source  = "hashicorp/aws"
       version = ">= 6.34.0, < 7.0.0" # pin to aws provider 6.x series
     }
+    tls = {
+      source  = "hashicorp/tls"
+      version = ">= 4.0.0, < 5.0.0"
+    }
   }
 }

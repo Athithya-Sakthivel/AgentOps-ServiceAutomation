@@ -67,5 +67,5 @@ jobs:
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
           ECR_REPO: ${{ vars.ECR_REPO }}
           TRIVY_SEVERITY: ${{ github.event.inputs.severity || 'CRITICAL' }}
-          PLATFORMS: ${{ vars.PLATFORMS || 'linux/amd64' }}
+          PLATFORMS: ${{ vars.PLATFORMS || 'linux/amd64,linux/arm64' }}
         run: bash src/services/auth/CI.sh

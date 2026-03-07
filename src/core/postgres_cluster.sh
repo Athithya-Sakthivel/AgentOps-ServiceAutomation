@@ -25,7 +25,7 @@ declare -A CLUSTER_WAIT_TIMEOUT=( [kind]="300" [eks]="900" )
 
 # Production-ready pinned defaults (override via env)
 export PG_IMAGE="${PG_IMAGE:-docker.io/athithya5354/postgresql:16.10-minimal-trixie}"
-export CNPG_IMAGE="${CNPG_IMAGE:-docker.io/athithya5354/cloudnative-pg:1.28.1}"  # to replace line 19370,19377 in src/scripts/archive/cnpg-1.28.1.yaml
+export CNPG_IMAGE="${CNPG_IMAGE:-docker.io/athithya5354/cloudnative-pg:1.28.1}"
 
 # === VALIDATION ===
 if [[ ! "${STORAGE_CLASS[$K8S_CLUSTER]+isset}" ]]; then

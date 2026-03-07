@@ -43,6 +43,9 @@ sudo apt install python3-pip python3-venv -y
 
 python3 -m venv .venv && source .venv/bin/activate && pip install "SQLAlchemy==2.0.47" "asyncpg==0.31.0" "valkey-glide==2.2.7"
 
+echo 'export PATH=$HOME/.local/bin:$PATH' >> ~/.bashrc
+source ~/.bashrc
+
 
 curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 

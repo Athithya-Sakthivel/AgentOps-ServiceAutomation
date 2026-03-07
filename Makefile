@@ -23,12 +23,31 @@ delete-pg:
 	kubectl delete crd $(kubectl get crd -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -E 'cnpg.io|barmancloud.cnpg.io') || true
 	kubectl delete ns cnpg-system databases || true
 
+iac-staging:
+	bash src/terraform/run.sh --create --env staging || true
+delete-iac-staging:
+	bash src/terraform/run.sh --delete --yes-delete --env staging
+
+test-iac-staging:
+	bash src/terraform/run.sh --create --env staging || true && \
+	bash src/terraform/run.sh --delete --yes-delete --env staging
+
 lc:
 	kind delete cluster --name local-cluster && kind create cluster --name local-cluster && bash src/core/default_storage_class.sh
 	
 tree:
 	tree -a -I '.git|.venv|.repos|__pycache__|venv|commands.sh|raw_data|.venv-pulumi|.venv2|archive|tmp.md|docs|models|tmp|raw|chunked'
 
+
+set-staging-eks-context:
+	./src/scripts/set_k8s_context.sh staging
+
+set-prod-eks-context:
+	./src/scripts/set_k8s_context.sh prod
+
+set-kind-context:
+	kubectl config use-context kind-rag8s-local
+	
 s3:
 	ACCOUNT_ID=$$(aws sts get-caller-identity --query Account --output text); \
 	if [ -z "$$S3_BUCKET" ]; then \
@@ -108,28 +127,6 @@ pulumi-destroy:
 
 pulumi-preview:
 	bash infra/pulumi_azure/run.sh --preview || true
-
-
-set-aks-context:
-	az aks get-credentials \
-	  -g "$$AZURE_RESOURCE_GROUP_NAME" \
-	  -n "$$(jq -r '.aks_cluster_name' infra/pulumi_azure/pulumi-outputs.json)" \
-	  --overwrite-existing && \
-	echo "current context: " && \
-	kubectl config current-context && \
-	kubectl get nodes && \
-	kubectl get pods -A
-
-delete-aks-context:
-	@CLUSTER_NAME="$$(jq -r '.aks_cluster_name' infra/pulumi_azure/pulumi-outputs.json)" ; \
-	RG_NAME="$$AZURE_RESOURCE_GROUP_NAME" ; \
-	kubectl config delete-context "$$CLUSTER_NAME" 2>/dev/null || true ; \
-	kubectl config delete-cluster "$$CLUSTER_NAME" 2>/dev/null || true ; \
-	kubectl config unset "users.clusterUser_$${RG_NAME}_$${CLUSTER_NAME}" 2>/dev/null || true ; \
-	kubectl config get-contexts
-
-set-kind-context:
-	kubectl config use-context kind-rag8s-local
 
 
 rollout-qdrant:

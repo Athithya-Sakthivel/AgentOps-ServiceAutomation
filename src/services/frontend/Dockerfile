@@ -1,3 +1,4 @@
+# Contract: container serves static SPA and proxies /auth/* to authservice:18200 and /api/* to rayservice:8000
 FROM nginxinc/nginx-unprivileged:1.29.5-alpine
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf

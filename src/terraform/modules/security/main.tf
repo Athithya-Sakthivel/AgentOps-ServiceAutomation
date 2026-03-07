@@ -1,7 +1,6 @@
 // src/terraform/modules/security/main.tf
-// Security module (executable HCL) for AgentOps-ServiceAutomation
-// Compatible with OpenTofu v1.11.5 and hashicorp/aws v6.x.
-// Minimal SGs: node SG, vpc_endpoints SG. DB SG removed (databases run inside Kubernetes).
+// Security module (OpenTofu v1.11.5 + aws provider v6.x).
+// Creates worker node SG and an interface-endpoints SG.
 
 variable "vpc_id" {
   description = "VPC ID where security groups will be created."
@@ -20,7 +19,7 @@ variable "ipv6_cidr_block" {
 }
 
 variable "enable_ipv6" {
-  description = "Project invariant: IPv6 enabled for VPC. Controls IPv6 rule population."
+  description = "Controls IPv6 rule population."
   type        = bool
   default     = true
 }
@@ -39,18 +38,21 @@ variable "tags" {
 
 locals {
   env_tag         = lookup(var.tags, "Environment", "prod")
-  merged_tags     = merge({ "Name" = var.name_prefix, "Environment" = local.env_tag }, var.tags)
+  merged_tags     = merge({ "Name" = var.name_prefix, "Environment" = local.env_tag, "ManagedBy" = "agentops-serviceautomation" }, var.tags)
   ipv6_blocks     = (var.enable_ipv6 && var.ipv6_cidr_block != "") ? [var.ipv6_cidr_block] : []
   any_ipv6_egress = var.enable_ipv6 ? ["::/0"] : []
 }
 
-# Worker nodes security group
+########################
+# Worker node security group
+########################
 resource "aws_security_group" "node" {
   name        = "${var.name_prefix}-nodes-sg"
   description = "Worker node security group (allows intra-VPC traffic)."
   vpc_id      = var.vpc_id
   tags        = local.merged_tags
 
+  # Allow full intra-VPC communication for node agents / kubelet / container networking.
   ingress {
     description      = "Allow all traffic within VPC CIDR"
     from_port        = 0
@@ -61,7 +63,7 @@ resource "aws_security_group" "node" {
   }
 
   egress {
-    description      = "Allow all outbound (needed for VPC endpoints and AWS APIs)"
+    description      = "Allow all outbound (AWS APIs, VPC endpoints, internet egress)."
     from_port        = 0
     to_port          = 0
     protocol         = "-1"
@@ -70,13 +72,16 @@ resource "aws_security_group" "node" {
   }
 }
 
-# Security group for VPC interface endpoints (ECR, STS, Bedrock, etc).
+########################
+# VPC interface endpoints SG (attach to interface endpoints ENIs)
+########################
 resource "aws_security_group" "vpc_endpoints" {
   name        = "${var.name_prefix}-endpoints-sg"
-  description = "Security group attached to VPC Interface Endpoints. Allows HTTPS from worker nodes."
+  description = "SG attached to VPC interface endpoints (ECR, STS, SSM...). Allows HTTPS from worker nodes."
   vpc_id      = var.vpc_id
   tags        = merge(local.merged_tags, { "role" = "vpc-endpoints" })
 
+  # Allow worker nodes to reach endpoint ENIs on 443
   ingress {
     description     = "Allow HTTPS (443) from worker nodes"
     from_port       = 443
@@ -85,9 +90,9 @@ resource "aws_security_group" "vpc_endpoints" {
     security_groups = [aws_security_group.node.id]
   }
 
-  // Optional: node management port for kubelet if needed
+  # Optional: allow Kubelet port if operators choose to access nodes via endpoints (kept permissive from VPC CIDR)
   ingress {
-    description      = "Allow intra-VPC kubelet (optional) - from VPC CIDR"
+    description      = "Optional: allow kubelet port (10250) from VPC CIDR"
     from_port        = 10250
     to_port          = 10250
     protocol         = "tcp"
@@ -105,25 +110,15 @@ resource "aws_security_group" "vpc_endpoints" {
   }
 }
 
-# Optional bastion/admin SG (not created by default)
-resource "aws_security_group" "bastion" {
-  count       = 0
-  name        = "${var.name_prefix}-bastion-sg"
-  description = "Reserved: bastion security group (not created by default in NAT-free private architecture)."
-  vpc_id      = var.vpc_id
-  tags        = merge(local.merged_tags, { "role" = "bastion" })
-}
-
+########################
+# Outputs
+########################
 output "node_security_group_id" {
   description = "Security Group ID for worker nodes."
   value       = aws_security_group.node.id
 }
 
 output "vpc_endpoints_security_group_id" {
-  description = "Security Group ID to attach to VPC Interface Endpoints (ECR API/DKR, STS, Bedrock)."
+  description = "Security Group ID to attach to VPC Interface Endpoints (ECR API/DKR, STS, SSM, etc)."
   value       = aws_security_group.vpc_endpoints.id
 }
-
-
-
-
