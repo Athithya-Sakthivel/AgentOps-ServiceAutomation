@@ -15,14 +15,13 @@ import os
 import secrets
 import sys
 import time
-from typing import AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
 from urllib.parse import quote_plus
 
 import asyncpg
 import jwt
-import itsdangerous
+from authlib.integrations.base_client.errors import MismatchingStateError, OAuthError
 from authlib.integrations.starlette_client import OAuth
-from authlib.integrations.base_client.errors import OAuthError, MismatchingStateError
 from authlib.jose.errors import JoseError
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -107,7 +106,7 @@ if MICROSOFT_CLIENT_ID and MICROSOFT_CLIENT_SECRET:
 if not enabled_providers:
     logger.warning("no_oauth_providers_configured")
 
-db_pool: Optional[asyncpg.Pool] = None
+db_pool: asyncpg.Pool | None = None
 
 async def init_db() -> None:
     global db_pool
@@ -169,7 +168,7 @@ async def init_db() -> None:
         if conn and db_pool:
             await db_pool.release(conn)
 
-async def audit_auth_event(user_id: Optional[str], action: str, details: dict, ip_address: Optional[str] = None) -> None:
+async def audit_auth_event(user_id: str | None, action: str, details: dict, ip_address: str | None = None) -> None:
     if not db_pool:
         return
     try:
@@ -188,12 +187,16 @@ async def save_oauth_pending(state: str, provider: str, code_verifier: str, redi
     if not db_pool:
         raise RuntimeError("DB not initialized")
     async with db_pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO oauth_pending (state, provider, code_verifier, redirect_uri, ip_address) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (state) DO UPDATE SET code_verifier = EXCLUDED.code_verifier, redirect_uri = EXCLUDED.redirect_uri, created_at = NOW(), ip_address = EXCLUDED.ip_address",
-            state, provider, code_verifier, redirect_uri, ip_address,
-        )
+        try:
+            await conn.execute(
+                "INSERT INTO oauth_pending (state, provider, code_verifier, redirect_uri, ip_address) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (state) DO UPDATE SET code_verifier = EXCLUDED.code_verifier, redirect_uri = EXCLUDED.redirect_uri, created_at = NOW(), ip_address = EXCLUDED.ip_address",
+                state, provider, code_verifier, redirect_uri, ip_address,
+            )
+        except Exception as e:
+            logger.exception("save_oauth_pending.failed")
+            raise HTTPException(status_code=500, detail="internal_error") from e
 
-async def pop_oauth_pending(state: str) -> Optional[dict]:
+async def pop_oauth_pending(state: str) -> dict | None:
     if not db_pool:
         return None
     async with db_pool.acquire() as conn:
@@ -213,7 +216,7 @@ def code_challenge_from_verifier(verifier: str) -> str:
 def make_state() -> str:
     return secrets.token_urlsafe(32)
 
-def create_jwt(user_id: str, email: str, name: Optional[str], provider: str) -> str:
+def create_jwt(user_id: str, email: str, name: str | None, provider: str) -> str:
     iat = int(time.time())
     payload = {"iss": JWT_ISS, "aud": JWT_AUD, "sub": user_id, "email": email, "name": name or email.split("@")[0], "provider": provider, "iat": iat, "exp": iat + JWT_EXP_SECONDS}
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
@@ -230,7 +233,7 @@ def verify_jwt(token: str) -> dict:
             continue
     raise InvalidTokenError("No valid secret found")
 
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     await init_db()
     yield
     if db_pool:
@@ -313,18 +316,18 @@ async def login_start(request: Request, provider: str) -> Response:
     code_challenge = code_challenge_from_verifier(code_verifier)
     try:
         await save_oauth_pending(state=state, provider=provider, code_verifier=code_verifier, redirect_uri=redirect_uri, ip_address=client_ip)
-    except Exception:
+    except Exception as e:
         logger.exception("save_oauth_pending.failed")
-        raise HTTPException(status_code=500, detail="internal_error")
+        raise HTTPException(status_code=500, detail="internal_error") from e
     logger.info("login.start.initiated", extra={"provider": provider, "redirect_uri": redirect_uri})
     try:
         return await client.authorize_redirect(request, redirect_uri, state=state, code_challenge=code_challenge, code_challenge_method="S256")
-    except Exception:
+    except Exception as e:
         try:
             await pop_oauth_pending(state)
-        except Exception:
-            pass
-        raise HTTPException(status_code=502, detail="provider_error")
+        except Exception as ex:
+            logger.warning("cleanup.pop_oauth_pending.failed", extra={"error": str(ex)})
+        raise HTTPException(status_code=502, detail="provider_error") from e
 
 @app.get("/auth/callback/{provider}")
 async def callback(request: Request, provider: str) -> Response:
@@ -477,14 +480,14 @@ async def logout(request: Request) -> HTMLResponse:
     safe_front = AUTH_BASE_URL or f"{request.url.scheme}://{request.url.netloc}"
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Signing out...</title></head><body><script>try{{localStorage.removeItem('app_jwt');}}catch(e){{}}window.location.replace('{safe_front}');</script></body></html>""")
 
-async def get_user_by_email(email: str) -> Optional[dict]:
+async def get_user_by_email(email: str) -> dict | None:
     if not db_pool:
         return None
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT id, email, provider, name FROM users WHERE email = $1", email.lower())
         return dict(row) if row else None
 
-async def upsert_user(email: str, provider: str, name: Optional[str], allowed_orgs: list[str]) -> str:
+async def upsert_user(email: str, provider: str, name: str | None, allowed_orgs: list[str]) -> str:
     if not db_pool:
         raise RuntimeError("Database pool not initialized")
     email_lower = email.lower()
@@ -501,7 +504,7 @@ async def upsert_user(email: str, provider: str, name: Optional[str], allowed_or
             """, email_lower, provider, name, allowed_orgs)
         return str(row["id"])
 
-def validate_domain(email: str, allowed_domains: list[str]) -> tuple[bool, Optional[str]]:
+def validate_domain(email: str, allowed_domains: list[str]) -> tuple[bool, str | None]:
     if not allowed_domains:
         return True, None
     try:
@@ -512,7 +515,7 @@ def validate_domain(email: str, allowed_domains: list[str]) -> tuple[bool, Optio
     except (IndexError, AttributeError):
         return False, None
 
-def validate_tenant(tenant_id: Optional[str], allowed_tenants: list[str]) -> tuple[bool, Optional[str]]:
+def validate_tenant(tenant_id: str | None, allowed_tenants: list[str]) -> tuple[bool, str | None]:
     if not allowed_tenants:
         return True, None
     if not tenant_id:
