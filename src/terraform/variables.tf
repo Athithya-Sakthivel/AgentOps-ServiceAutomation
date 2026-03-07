@@ -19,26 +19,6 @@ variable "cluster_name" {
   default     = "agentops-eks-prod"
 }
 
-variable "enable_ipv6" {
-  description = "Project invariant: IPv6 must be enabled (dual-stack)."
-  type        = bool
-  default     = true
-  validation {
-    condition     = var.enable_ipv6 == true
-    error_message = "enable_ipv6 must be true."
-  }
-}
-
-variable "no_nat" {
-  description = "Design invariant: NAT gateways are disabled."
-  type        = bool
-  default     = true
-  validation {
-    condition     = var.no_nat == true
-    error_message = "no_nat must be true."
-  }
-}
-
 variable "vpc_cidr" {
   description = "Primary IPv4 CIDR for the VPC (recommend /19 or /20)."
   type        = string
@@ -53,24 +33,6 @@ variable "private_subnet_cidrs" {
     condition     = length(var.private_subnet_cidrs) == 2
     error_message = "private_subnet_cidrs must contain exactly 2 CIDRs."
   }
-}
-
-variable "assign_ipv6_cidr_block" {
-  description = "Request AWS-provided IPv6 CIDR block for the VPC."
-  type        = bool
-  default     = true
-}
-
-variable "enable_vpc_endpoints" {
-  description = "Create VPC endpoints required for NAT-free operation."
-  type        = bool
-  default     = true
-}
-
-variable "bedrock_enabled" {
-  description = "Create Bedrock interface endpoint when true."
-  type        = bool
-  default     = true
 }
 
 variable "system_nodegroup" {

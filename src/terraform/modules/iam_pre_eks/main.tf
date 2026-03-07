@@ -1,7 +1,6 @@
 // src/terraform/modules/iam_pre_eks/main.tf
 // Pre-EKS IAM: cluster & node roles, cluster-autoscaler policy, CI ECR push policy.
 // Stable, deterministic outputs consumed by eks and iam_post_eks.
-// Compatible: OpenTofu v1.11.5 + hashicorp/aws v6.x
 
 variable "name_prefix" {
   type    = string
@@ -18,7 +17,6 @@ locals {
   common_tags = merge({ ManagedBy = "agentops-serviceautomation" }, var.tags)
 }
 
-# EKS cluster role (eks.amazonaws.com)
 resource "aws_iam_role" "cluster" {
   name = "${local.name_prefix}-eks-cluster-role"
   assume_role_policy = jsonencode({
@@ -39,7 +37,6 @@ resource "aws_iam_role_policy_attachment" "cluster_attach" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
 
-# EC2 Node role (ec2.amazonaws.com)
 resource "aws_iam_role" "node" {
   name = "${local.name_prefix}-eks-node-role"
   assume_role_policy = jsonencode({
@@ -70,12 +67,6 @@ resource "aws_iam_role_policy_attachment" "node_attach_cni" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
 }
 
-# NOTE: For SSM support (optional, recommended for debugging/SSM Run Command),
-# attach AmazonSSMManagedInstanceCore to the node role in your environment if you
-# need SSM access from the instance profile. This module keeps the node role minimal
-# (EKS worker + ECR read + CNI). Add SSM permissions from root if desired.
-
-# Cluster Autoscaler policy
 resource "aws_iam_policy" "cluster_autoscaler" {
   name = "${local.name_prefix}-cluster-autoscaler-policy"
 
@@ -111,7 +102,6 @@ resource "aws_iam_policy" "cluster_autoscaler" {
   tags = local.common_tags
 }
 
-# CI ECR push policy (scoped to * by default)
 resource "aws_iam_policy" "ci_ecr_push" {
   name = "${local.name_prefix}-ci-ecr-push-policy"
 
@@ -138,7 +128,6 @@ resource "aws_iam_policy" "ci_ecr_push" {
   tags = local.common_tags
 }
 
-# Outputs
 output "cluster_role_arn" {
   description = "ARN of EKS cluster IAM role"
   value       = aws_iam_role.cluster.arn

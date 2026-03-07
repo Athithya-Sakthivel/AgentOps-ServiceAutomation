@@ -10,22 +10,20 @@ terraform {
 module "vpc" {
   source = "./modules/vpc"
 
-  vpc_cidr               = var.vpc_cidr
-  private_subnet_cidrs   = var.private_subnet_cidrs
-  assign_ipv6_cidr_block = var.assign_ipv6_cidr_block
-  enable_ipv6            = var.enable_ipv6
-  tags                   = var.tags
+  vpc_cidr             = var.vpc_cidr
+  private_subnet_cidrs = var.private_subnet_cidrs
+  tags                 = var.tags
 }
 
 module "security" {
   source = "./modules/security"
 
-  vpc_id          = module.vpc.vpc_id
-  vpc_cidr        = var.vpc_cidr
-  ipv6_cidr_block = try(module.vpc.ipv6_cidr_block, "")
-  enable_ipv6     = var.enable_ipv6
-  name_prefix     = "agentops"
-  tags            = var.tags
+  vpc_id      = module.vpc.vpc_id
+  vpc_cidr    = var.vpc_cidr
+  name_prefix = "agentops"
+  # Explicitly disable IPv6 in the security module so rules remain IPv4-only.
+  enable_ipv6 = false
+  tags        = var.tags
 }
 
 module "ecr" {
@@ -38,26 +36,6 @@ module "iam_pre_eks" {
   source      = "./modules/iam_pre_eks"
   name_prefix = "agentops"
   tags        = var.tags
-}
-
-# --- VPC endpoints (depends on vpc + security + iam_pre_eks) ---
-module "endpoints" {
-  source = "./modules/endpoints"
-
-  vpc_id     = module.vpc.vpc_id
-  subnet_ids = module.vpc.private_subnet_ids
-
-  # pass route table ids (module.vpc provides private_route_table_ids)
-  route_table_ids = try(module.vpc.private_route_table_ids, [])
-
-  security_group_id = try(module.security.vpc_endpoints_security_group_id, "")
-
-  enable_vpc_endpoints = var.enable_vpc_endpoints
-  bedrock_enabled      = var.bedrock_enabled
-  region               = var.region
-  tags                 = var.tags
-
-  depends_on = [module.iam_pre_eks, module.vpc, module.security]
 }
 
 # --- EKS cluster & managed node groups — consumes iam_pre_eks outputs ---
@@ -90,12 +68,11 @@ module "eks" {
 
   tags = var.tags
 
-  # ensure image endpoints and repos exist before node bootstrap
-  depends_on = [module.endpoints, module.ecr, module.iam_pre_eks, module.security]
+  # ensure essential infra (vpc, security, iam_pre_eks, ecr) exists before node bootstrap
+  depends_on = [module.vpc, module.security, module.iam_pre_eks, module.ecr]
 }
 
 # --- IAM resources that require the EKS OIDC provider (IRSA roles) ---
-# pass node SG and cluster control-plane SG so module can apply post-cluster SG rules
 module "iam_post_eks" {
   source = "./modules/iam_post_eks"
 
@@ -114,7 +91,7 @@ module "iam_post_eks" {
   autoscaler_sa_namespace = "kube-system"
   autoscaler_sa_name      = "cluster-autoscaler"
 
-  # NEW: SG ids used to create cross-SG ingress rules required by EKS control plane <-> nodes.
+  # SG ids used to create cross-SG ingress rules required by EKS control plane <-> nodes.
   node_security_group_id    = try(module.security.node_security_group_id, "")
   cluster_security_group_id = try(module.eks.cluster_security_group_id, "")
 

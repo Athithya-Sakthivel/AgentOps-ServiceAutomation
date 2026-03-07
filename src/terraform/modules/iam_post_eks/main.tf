@@ -1,12 +1,8 @@
 // src/terraform/modules/iam_post_eks/main.tf
 // Post-EKS IAM + optional control-plane <-> node SG rules.
-// IRSA roles are created by this module unconditionally (deterministic).
-// Security group rules are present in configuration without `count` to avoid
-// plan-time "count depends on unknown" problems. Root MUST pass valid SG IDs
-// (module.security.node_security_group_id and module.eks.cluster_security_group_id)
-// when it intends SG rules to be applied. If root passes empty strings the
-// AWS provider will reject the apply — this is intentional to avoid silently
-// skipping required network rules.
+// IRSA roles are created unconditionally; SG rules are created only when
+// the operator explicitly enables them via module variable `create_sg_rules = true`.
+// This avoids accidental duplicate-rule attempts and plan-time unknown count issues.
 
 variable "name_prefix" {
   type    = string
@@ -60,15 +56,22 @@ variable "autoscaler_sa_name" {
 }
 
 variable "node_security_group_id" {
-  description = "Worker node security group id (from modules/security). Root must pass this when SG rules are required."
+  description = "Worker node security group id (from modules/security)."
   type        = string
   default     = ""
 }
 
 variable "cluster_security_group_id" {
-  description = "EKS control-plane security group id (from modules/eks). Root must pass this when SG rules are required."
+  description = "EKS control-plane security group id (from modules/eks)."
   type        = string
   default     = ""
+}
+
+# Explicit operator-controlled flag. Default false to avoid accidental duplicate SG-rule creation.
+variable "create_sg_rules" {
+  description = "When true, the module will create control-plane <-> node SG rules. Set to true only after cluster and node SGs exist and you have confirmed rules are not already present."
+  type        = bool
+  default     = false
 }
 
 locals {
@@ -78,13 +81,7 @@ locals {
 
 ########################
 # IRSA Roles (EBS CSI, Cluster Autoscaler)
-# - Created deterministically. Root should pass valid oidc_provider_* values.
-# - If oidc_provider_arn or issuer are empty the assume_role_policy will contain
-#   the provided (empty) values; root should avoid that. Typical flow is:
-#     1) create module.eks (produces oidc_provider_arn and issuer)
-#     2) pass outputs into this module in the same root (Terraform will handle apply).
 ########################
-
 resource "aws_iam_role" "ebs_csi_irsa" {
   name = "${local.name_prefix}-ebs-csi-irsa-role"
 
@@ -146,15 +143,14 @@ resource "aws_iam_role_policy_attachment" "cluster_autoscaler_attach" {
 }
 
 ########################
-# Control-plane <-> Nodes SG rules
-# - THESE RESOURCES ARE DECLARED WITHOUT count/for_each to avoid plan-time
-#   dependency-on-unknown problems. Root must pass valid non-empty SG IDs
-#   when it expects these rules to be created.
-# - If root passes empty strings terraform apply will attempt the create and
-#   the provider will fail; this forces the operator to provide correct values.
+# Control-plane <-> Nodes SG rules (explicit)
+# - Created only if create_sg_rules = true.
+# - Operator must ensure the SG IDs are correct and that identical rules don't already exist.
 ########################
 
 resource "aws_security_group_rule" "nodes_to_api_https" {
+  count = var.create_sg_rules ? 1 : 0
+
   security_group_id        = var.cluster_security_group_id
   type                     = "ingress"
   from_port                = 443
@@ -165,6 +161,8 @@ resource "aws_security_group_rule" "nodes_to_api_https" {
 }
 
 resource "aws_security_group_rule" "api_to_kubelet" {
+  count = var.create_sg_rules ? 1 : 0
+
   security_group_id        = var.node_security_group_id
   type                     = "ingress"
   from_port                = 10250
@@ -189,6 +187,6 @@ output "cluster_autoscaler_irsa_role_arn" {
 }
 
 output "cluster_node_sg_rules_applied" {
-  description = "Indicates whether SG ids were supplied (operator should check)."
-  value       = (var.node_security_group_id != "" && var.cluster_security_group_id != "")
+  description = "True if create_sg_rules was true (operator intent)."
+  value       = var.create_sg_rules
 }
