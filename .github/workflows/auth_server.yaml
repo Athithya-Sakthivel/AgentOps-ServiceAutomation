@@ -60,7 +60,6 @@ jobs:
 
       - name: Build and Push
         env:
-          IMAGE_TAG: ${{ github.sha }}
           PUSH: ${{ github.ref_name == 'main' && 'true' || 'false' }}
           REGISTRY_TYPE: ${{ vars.REGISTRY_TYPE || 'dockerhub' }}
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}

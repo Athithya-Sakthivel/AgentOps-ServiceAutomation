@@ -2,7 +2,7 @@
 set -euo pipefail
 
 IMAGE_NAME="${IMAGE_NAME:-agentops-auth}"
-IMAGE_TAG="${IMAGE_TAG:-multiarch-v0.1}"
+IMAGE_TAG="${IMAGE_TAG:-multiarch-v0.2}"
 BUILD_CONTEXT="${BUILD_CONTEXT:-src/services/auth}"
 DOCKERFILE_PATH="${DOCKERFILE_PATH:-${BUILD_CONTEXT}/Dockerfile}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
