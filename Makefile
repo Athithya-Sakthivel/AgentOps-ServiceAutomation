@@ -101,21 +101,21 @@ push-auth:
 	git commit -m "updating auth server"
 	git push origin main
 
-	
-
-push:
+push-all:
 	ruff check . --fix
 	git add .
 	git commit -m "new"
 	gitleaks detect --source . --no-git --exit-code 1
 	git push origin main --force
 
-
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
 	find . -type f -name "*.log" ! -path "./.git/*" -delete
 	find . -type f -name "*.pulumi-logs" ! -path "./.git/*" -delete
+	find . -type d -name ".ruff_cache" -exec rm -rf {} +
+	rm -rf logs
+	rm -rf src/terraform/.plans
 	clear
 
 
