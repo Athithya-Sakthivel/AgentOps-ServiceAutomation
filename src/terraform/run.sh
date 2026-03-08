@@ -7,12 +7,6 @@
 #  - --validate  : init backend and validate backend / prereqs
 #  - --find-version / --rollback-state <versionId> : state management helpers
 #
-# Safety design for automated formatting:
-#  - The script runs "tofu fmt -check -recursive".
-#  - If formatting check fails, the script runs "tofu fmt -recursive" to auto-fix files,
-#    re-runs the check, and proceeds only if check passes.
-#  - The script logs which files changed (if git is available) so operators can review and commit.
-#
 # Usage:
 #   bash src/terraform/run.sh --plan  --env staging
 #   bash src/terraform/run.sh --create --env staging
@@ -24,8 +18,7 @@
 #  - State bucket is versioned (ENABLED) and encrypted (AES256).
 #  - DynamoDB lock table exists and is ACTIVE.
 #  - Script exits non-zero on any infrastructure mutation failure.
-# Requirements: aws, tofu, python3 on PATH; credentials provided via env/profile/role.
-
+#
 #!/usr/bin/env bash
 set -euo pipefail
 IFS=$'\n\t'

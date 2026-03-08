@@ -1,5 +1,4 @@
 resources:
-  - secret.template.yaml
   - configmap.template.yaml
   - serviceaccount.yaml
   - service.yaml

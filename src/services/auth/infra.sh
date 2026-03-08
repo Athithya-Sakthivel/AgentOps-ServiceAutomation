@@ -3,56 +3,39 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # src/services/auth/infra.sh
-# Platform-grade, idempotent manifest generator + controller for the auth service.
-# Features:
-#  - Renders manifests to src/manifests/auth (safe templates for git)
-#  - Creates/updates cluster secret 'auth-secrets' from env values or auto-extracted Postgres secret
-#  - Commands: --rollout (idempotent apply/diff), --inspect, --delete
-#  - For --rollout: will diff; if no change, nothing applied (pods not restarted). If changes, applies and waits for deployment.
-#  - Uses a single DATABASE_URL secret value for DB connectivity (avoids fragmented DB env vars).
-#  - Supports K8S_CLUSTER=kind or eks; adds nodeSelector for EKS inference nodegroup.
-#  - All sensitive values are sourced into secret 'auth-secrets' (not committed).
-#
-# Usage:
-#   K8S_CLUSTER=kind AUTH_NAMESPACE=app AUTH_IMAGE=ghcr.io/yourorg/auth:tag ./src/services/auth/infra.sh --rollout
-#   ./src/services/auth/infra.sh --inspect
-#   ./src/services/auth/infra.sh --delete
-#
-# ENV (selected):
-#   K8S_CLUSTER            kind|eks (default: kind)
-#   AUTH_NAMESPACE         namespace to install to (default: app)
-#   AUTH_IMAGE             container image (default placeholder)
-#   DATABASE_URL           full postgres URI (preferred). If omitted script will attempt to derive from known postgres secret.
-#   JWT_SECRET, SESSION_SECRET, GOOGLE_CLIENT_ID/SECRET, etc. (optional, used to create auth-secrets)
-#   INFERENCE_NODE_LABEL_KEY/VAL used for nodeSelector on eks
-#
-# Exit codes:
-#   0 success, non-zero on fatal errors
+# Platform-grade idempotent controller for auth service manifests.
+# Commands: --rollout | --inspect | --delete
+# Secrets are created/updated via kubectl (not by applying templates that contain unsubstituted placeholders).
 
 MANIFESTS_DIR="${MANIFESTS_DIR:-src/manifests/auth}"
-K8S_CLUSTER="${K8S_CLUSTER:-kind}"
+K8S_CLUSTER="${K8S_CLUSTER:-kind}"           # kind | eks
 AUTH_NAMESPACE="${AUTH_NAMESPACE:-app}"
 AUTH_IMAGE="${AUTH_IMAGE:-athithya5354/agentops-auth:multiarch-v0.2}"
 AUTH_NAME="${AUTH_NAME:-auth}"
+
+# node selection for EKS inference nodegroup (applied only when K8S_CLUSTER=eks)
 INFERENCE_NODE_LABEL_KEY="${INFERENCE_NODE_LABEL_KEY:-nodegroup}"
 INFERENCE_NODE_LABEL_VALUE="${INFERENCE_NODE_LABEL_VALUE:-inference}"
 
-# Secrets / config inputs (supply via env)
+# Secrets / inputs (can be provided via environment)
 DATABASE_URL="${DATABASE_URL:-}"
 JWT_SECRET="${JWT_SECRET:-}"
-JWT_SECRET_PREVIOUS="${JWT_SECRET_PREVIOUS:-}"
+JWT_SECRET_PREVIOUS="${JWT_SECRET}"
 SESSION_SECRET="${SESSION_SECRET:-}"
 GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID:-}"
 GOOGLE_CLIENT_SECRET="${GOOGLE_CLIENT_SECRET:-}"
 MICROSOFT_CLIENT_ID="${MICROSOFT_CLIENT_ID:-}"
 MICROSOFT_CLIENT_SECRET="${MICROSOFT_CLIENT_SECRET:-}"
+
 AUTH_BASE_URL="${AUTH_BASE_URL:-}"
 JWT_EXP_SECONDS="${JWT_EXP_SECONDS:-1800}"
 JWT_ISS="${JWT_ISS:-agentic-platform}"
 JWT_AUD="${JWT_AUD:-agent-frontend}"
+
 GOOGLE_ALLOWED_DOMAINS="${GOOGLE_ALLOWED_DOMAINS:-}"
 MICROSOFT_ALLOWED_DOMAINS="${MICROSOFT_ALLOWED_DOMAINS:-}"
 MICROSOFT_ALLOWED_TENANT_IDS="${MICROSOFT_ALLOWED_TENANT_IDS:-}"
+
 SESSION_COOKIE_NAME="${SESSION_COOKIE_NAME:-auth_session}"
 SESSION_COOKIE_SECURE="${SESSION_COOKIE_SECURE:-false}"
 SESSION_COOKIE_SAMESITE="${SESSION_COOKIE_SAMESITE:-lax}"
@@ -60,15 +43,15 @@ SESSION_COOKIE_DOMAIN="${SESSION_COOKIE_DOMAIN:-}"
 SESSION_COOKIE_MAX_AGE="${SESSION_COOKIE_MAX_AGE:-3600}"
 PKCE_TTL_SECONDS="${PKCE_TTL_SECONDS:-300}"
 
-# Auto-detected Postgres secret, host used when DATABASE_URL not supplied
-POSTGRES_SECRET_NAME="${POSTGRES_SECRET_NAME:-app-postgres-app}"    # produced by postgres rollout
+# Postgres secret info (used to derive DATABASE_URL when it's not provided)
+POSTGRES_SECRET_NAME="${POSTGRES_SECRET_NAME:-app-postgres-app}"
 POSTGRES_NAMESPACE="${POSTGRES_NAMESPACE:-databases}"
 POSTGRES_HOST="${POSTGRES_HOST:-app-postgres-r.databases.svc.cluster.local}"
 POSTGRES_PORT="${POSTGRES_PORT:-5432}"
 POSTGRES_DB="${POSTGRES_DB:-app}"
 POSTGRES_USER="${POSTGRES_USER:-app}"
 
-# HPA / replica defaults
+# HPA / replica defaults (different defaults for kind vs eks)
 if [[ "${K8S_CLUSTER}" == "eks" ]]; then
   REPLICAS=2
   MIN_REPLICAS=2
@@ -85,7 +68,7 @@ LOG(){ printf '%s %s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$*" >&2; }
 FATAL(){ LOG "FATAL: $*"; exit 1; }
 require_bin(){ command -v "$1" >/dev/null 2>&1 || FATAL "$1 not found in PATH"; }
 
-# parse flags
+# Parse flags
 MODE="render-only"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -99,16 +82,17 @@ done
 
 require_bin mkdir
 require_bin kubectl
-require_bin awk
 require_bin sed
+require_bin awk
 require_bin printf
+require_bin base64
 
 mkdir -p "${MANIFESTS_DIR}"
 
 render_templates(){
   LOG "Rendering manifests to ${MANIFESTS_DIR} (K8S_CLUSTER=${K8S_CLUSTER})"
 
-  # secret.template.yaml - placeholders only (safe to commit)
+  # secret.template.yaml: safe placeholder file intended for git (NOT applied by kustomize)
   cat > "${MANIFESTS_DIR}/secret.template.yaml" <<'EOF'
 apiVersion: v1
 kind: Secret
@@ -120,7 +104,7 @@ metadata:
     app.kubernetes.io/managed-by: infra-generator
 type: Opaque
 stringData:
-  # Provide either database-url (preferred) OR db-user/db-password etc (not recommended).
+  # Provide either database-url (preferred) OR supply runtime secret via kubectl create secret
   database-url: "${DATABASE_URL:-}"
   jwt-secret: "${JWT_SECRET:-}"
   jwt-secret-previous: "${JWT_SECRET_PREVIOUS:-}"
@@ -131,7 +115,7 @@ stringData:
   microsoft-client-secret: "${MICROSOFT_CLIENT_SECRET:-}"
 EOF
 
-  # configmap.template.yaml (non-sensitive)
+  # configmap.template.yaml - non-sensitive configs
   cat > "${MANIFESTS_DIR}/configmap.template.yaml" <<EOF
 apiVersion: v1
 kind: ConfigMap
@@ -157,6 +141,7 @@ data:
   PKCE_TTL_SECONDS: "${PKCE_TTL_SECONDS}"
 EOF
 
+  # Service
   cat > "${MANIFESTS_DIR}/service.yaml" <<EOF
 apiVersion: v1
 kind: Service
@@ -175,6 +160,7 @@ spec:
       targetPort: 8080
 EOF
 
+  # ServiceAccount
   cat > "${MANIFESTS_DIR}/serviceaccount.yaml" <<EOF
 apiVersion: v1
 kind: ServiceAccount
@@ -185,7 +171,13 @@ metadata:
     app: ${AUTH_NAME}
 EOF
 
-  # deployment (env wiring uses only DATABASE_URL secret)
+  # Build optional nodeSelector YAML snippet (empty for non-eks)
+  NODE_SELECTOR_YAML=""
+  if [[ "${K8S_CLUSTER}" == "eks" ]]; then
+    NODE_SELECTOR_YAML="$(printf '      nodeSelector:\n        %s: \"%s\"\n' "${INFERENCE_NODE_LABEL_KEY}" "${INFERENCE_NODE_LABEL_VALUE}")"
+  fi
+
+  # Deployment (uses only secretKeyRef for sensitive values). Node selector included only for eks.
   cat > "${MANIFESTS_DIR}/deployment.yaml" <<EOF
 apiVersion: apps/v1
 kind: Deployment
@@ -207,7 +199,7 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8080"
     spec:
-      serviceAccountName: ${AUTH_NAME}
+${NODE_SELECTOR_YAML}      serviceAccountName: ${AUTH_NAME}
       terminationGracePeriodSeconds: 30
       containers:
         - name: ${AUTH_NAME}
@@ -363,16 +355,7 @@ spec:
               app: ${AUTH_NAME}
 EOF
 
-  # add nodeSelector for EKS clusters to prefer inference nodegroup
-  if [[ "${K8S_CLUSTER}" == "eks" ]]; then
-    awk -v key="${INFERENCE_NODE_LABEL_KEY}" -v val="${INFERENCE_NODE_LABEL_VALUE}" '
-      /topologySpreadConstraints:/ { print; inblock=1; next }
-      { print }
-      END { if (inblock) print "      nodeSelector:\n        " key ": \"" val "\"\n" }
-    ' "${MANIFESTS_DIR}/deployment.yaml" > "${MANIFESTS_DIR}/deployment.tmp" && mv "${MANIFESTS_DIR}/deployment.tmp" "${MANIFESTS_DIR}/deployment.yaml"
-    LOG "Added nodeSelector: ${INFERENCE_NODE_LABEL_KEY}=${INFERENCE_NODE_LABEL_VALUE}"
-  fi
-
+  # HPA
   cat > "${MANIFESTS_DIR}/hpa.yaml" <<EOF
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -395,9 +378,9 @@ spec:
           averageUtilization: ${CPU_TARGET}
 EOF
 
+  # kustomization: IMPORTANT: do NOT include secret.template.yaml here (it is a safe-to-commit placeholder)
   cat > "${MANIFESTS_DIR}/kustomization.yaml" <<EOF
 resources:
-  - secret.template.yaml
   - configmap.template.yaml
   - serviceaccount.yaml
   - service.yaml
@@ -406,40 +389,38 @@ resources:
 namespace: ${AUTH_NAMESPACE}
 EOF
 
-  LOG "Manifests rendered: $(ls -1 ${MANIFESTS_DIR} | sed -n '1,200p' )"
+  LOG "Manifests rendered: $(ls -1 "${MANIFESTS_DIR}" | tr '\n' ' ' )"
 }
 
-# Attempt to auto-derive DATABASE_URL from postgres secret if DATABASE_URL not provided
+# try to derive DATABASE_URL from postgres secret if DATABASE_URL not supplied
 derive_database_url(){
   if [[ -n "${DATABASE_URL}" ]]; then
-    LOG "DATABASE_URL supplied via env - using it."
+    LOG "Using provided DATABASE_URL"
     return 0
   fi
 
-  LOG "DATABASE_URL not supplied. Attempting to derive from Postgres secret ${POSTGRES_SECRET_NAME} in namespace ${POSTGRES_NAMESPACE}."
-
+  LOG "DATABASE_URL not supplied; attempting derive from secret ${POSTGRES_SECRET_NAME} in ${POSTGRES_NAMESPACE}"
   if ! kubectl -n "${POSTGRES_NAMESPACE}" get secret "${POSTGRES_SECRET_NAME}" >/dev/null 2>&1; then
-    LOG "Postgres secret ${POSTGRES_SECRET_NAME} not found in namespace ${POSTGRES_NAMESPACE}. Skipping auto-derive."
+    LOG "Postgres secret ${POSTGRES_SECRET_NAME} not found; leave DATABASE_URL empty"
     return 0
   fi
 
-  # Try common secret keys: password
+  # common key name "password"
   local pass_b64
   pass_b64="$(kubectl -n "${POSTGRES_NAMESPACE}" get secret "${POSTGRES_SECRET_NAME}" -o jsonpath='{.data.password}' 2>/dev/null || true)"
   if [[ -z "${pass_b64}" ]]; then
-    LOG "Secret ${POSTGRES_SECRET_NAME} exists but no 'password' field found; skipping derive."
+    LOG "Postgres secret present but no 'password' key; skip derive"
     return 0
   fi
 
   local pass
   pass="$(printf "%s" "${pass_b64}" | base64 --decode)"
   DATABASE_URL="postgresql://${POSTGRES_USER}:${pass}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
-  LOG "Derived DATABASE_URL from ${POSTGRES_SECRET_NAME} (host=${POSTGRES_HOST}, user=${POSTGRES_USER})."
+  LOG "Derived DATABASE_URL (host=${POSTGRES_HOST}, user=${POSTGRES_USER})"
 }
 
-# Create or update auth-secrets if concrete values available
+# create/update auth-secrets from concrete values (idempotent). If no values provided, just skip.
 ensure_auth_secret(){
-  # Build args for kubectl create secret generic
   local args=()
   if [[ -n "${DATABASE_URL}" ]]; then
     args+=(--from-literal=database-url="${DATABASE_URL}")
@@ -453,50 +434,59 @@ ensure_auth_secret(){
   [[ -n "${MICROSOFT_CLIENT_SECRET}" ]] && args+=(--from-literal=microsoft-client-secret="${MICROSOFT_CLIENT_SECRET}")
 
   if [[ ${#args[@]} -eq 0 ]]; then
-    LOG "No concrete secret values provided to create auth-secrets (skip). Manifests still reference auth-secrets (use kubectl create secret to provide values)."
+    LOG "No concrete secret values provided; skipping creation of auth-secrets (manifests still reference it)."
     return 0
   fi
 
-  LOG "Creating/updating auth-secrets in namespace ${AUTH_NAMESPACE} (idempotent)"
+  LOG "Creating/updating secret auth-secrets in namespace ${AUTH_NAMESPACE}"
   kubectl create secret generic auth-secrets -n "${AUTH_NAMESPACE}" "${args[@]}" --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1
   LOG "auth-secrets created/updated"
 }
 
-# Diff then apply (idempotent rollout)
+# diff and apply idempotent
 diff_and_apply(){
-  LOG "Performing diff: kubectl diff -k ${MANIFESTS_DIR} (server-side)"
-  if kubectl diff -k "${MANIFESTS_DIR}" >/tmp/auth.diff 2>&1; then
-    if [[ -s /tmp/auth.diff ]]; then
-      LOG "Changes detected (diff non-empty). Applying manifests."
-      kubectl apply -k "${MANIFESTS_DIR}" || { LOG "kubectl apply failed"; return 1; }
-      return 0
-    else
-      LOG "No changes detected (diff empty). Skipping apply."
+  LOG "Performing diff: kubectl diff -k ${MANIFESTS_DIR}"
+  tmpdiff="$(mktemp)"
+  set +e
+  kubectl diff -k "${MANIFESTS_DIR}" >"${tmpdiff}" 2>&1
+  diff_rc=$?
+  set -e
+
+  if [[ ${diff_rc} -eq 0 ]]; then
+    # diff command succeeded and returned 0 => no differences
+    if [[ -s "${tmpdiff}" ]]; then
+      LOG "kubectl diff returned 0 but output present; treating as no-change (unexpected)."
+      rm -f "${tmpdiff}"
       return 2
     fi
-  else
-    # kubectl diff returns non-zero on diff or errors; inspect output
-    if grep -q "Error from server" /tmp/auth.diff 2>/dev/null; then
-      LOG "kubectl diff encountered server error - showing output"
-      sed -n '1,200p' /tmp/auth.diff >&2
-      return 1
-    fi
-    # non-empty diff (diff outputs to stdout but exitcode non-zero) treat as changes
-    if [[ -s /tmp/auth.diff ]]; then
-      LOG "Diff command produced output (treating as changes). Applying."
-      sed -n '1,200p' /tmp/auth.diff >&2
-      kubectl apply -k "${MANIFESTS_DIR}" || { LOG "kubectl apply failed"; return 1; }
-      return 0
-    fi
-    LOG "kubectl diff returned non-zero with no diff output; attempting apply."
-    kubectl apply -k "${MANIFESTS_DIR}" || { LOG "kubectl apply failed"; return 1; }
-    return 0
+    rm -f "${tmpdiff}"
+    LOG "No changes detected; skipping apply."
+    return 2
   fi
+
+  # diff_rc != 0 : could be diff produced (normal) or error. Inspect output for server errors.
+  if grep -q "Error from server" "${tmpdiff}" 2>/dev/null; then
+    LOG "kubectl diff encountered server error; printing first lines of output for diagnosis"
+    sed -n '1,200p' "${tmpdiff}" >&2
+    rm -f "${tmpdiff}"
+    return 1
+  fi
+
+  # treat diff output as changes -> apply
+  LOG "Changes detected; applying manifests"
+  rm -f "${tmpdiff}"
+  if ! kubectl apply -k "${MANIFESTS_DIR}" >/dev/null 2>&1; then
+    LOG "kubectl apply failed; attempting to gather diagnostics"
+    kubectl -n "${AUTH_NAMESPACE}" get pods -o wide || true
+    kubectl -n "${AUTH_NAMESPACE}" logs -l app="${AUTH_NAME}" --tail=200 || true
+    return 1
+  fi
+  return 0
 }
 
 wait_deployment_available(){
   LOG "Waiting for deployment/${AUTH_NAME} available in ${AUTH_NAMESPACE} (timeout 180s)"
-  if ! kubectl -n "${AUTH_NAMESPACE}" wait --for=condition=available --timeout=180s deployment/${AUTH_NAME}; then
+  if ! kubectl -n "${AUTH_NAMESPACE}" wait --for=condition=available --timeout=180s deployment/"${AUTH_NAME}"; then
     LOG "Deployment did not become available in time; collecting diagnostics"
     kubectl -n "${AUTH_NAMESPACE}" get pods -o wide || true
     kubectl -n "${AUTH_NAMESPACE}" describe deployment "${AUTH_NAME}" || true
@@ -513,12 +503,20 @@ inspect(){
   kubectl get ns "${AUTH_NAMESPACE}" --ignore-not-found -o wide || true
   LOG "Deployment / Pods"
   kubectl -n "${AUTH_NAMESPACE}" get deploy,sts,po -l app="${AUTH_NAME}" -o wide || true
-  LOG "Secrets referencing"
-  kubectl -n "${AUTH_NAMESPACE}" get secret auth-secrets --ignore-not-found -o yaml || true
+
+  LOG "Secret auth-secrets (masked)"
   if kubectl -n "${AUTH_NAMESPACE}" get secret auth-secrets >/dev/null 2>&1; then
-    LOG "DATABASE_URL (masked):"
-    kubectl -n "${AUTH_NAMESPACE}" get secret auth-secrets -o jsonpath='{.data.database-url}' 2>/dev/null | sed -n '1p' | { read -r db64 || true; if [[ -n "${db64}" ]]; then printf "%s\n" "${db64}" | base64 --decode | sed -E 's/(\/\/[^:]+:).+(@)/\1****\2/'; else echo "(not set)"; fi; }
+    local db64
+    db64="$(kubectl -n "${AUTH_NAMESPACE}" get secret auth-secrets -o jsonpath='{.data.database-url}' 2>/dev/null || true)"
+    if [[ -n "${db64}" ]]; then
+      printf "%s\n" "${db64}" | base64 --decode 2>/dev/null | sed -E 's,(postgresql://[^:]+:)[^@]+(@),\1****\2,' || true
+    else
+      LOG "(database-url not set in auth-secrets)"
+    fi
+  else
+    LOG "(auth-secrets not present)"
   fi
+
   LOG "Service"
   kubectl -n "${AUTH_NAMESPACE}" get svc "${AUTH_NAME}" --ignore-not-found -o wide || true
   LOG "ConfigMap auth-config"
@@ -527,19 +525,11 @@ inspect(){
 }
 
 delete(){
-  LOG "Deleting kustomize resources in ${MANIFESTS_DIR} (kubectl delete -k)"
-  if kubectl -n "${AUTH_NAMESPACE}" get deployment "${AUTH_NAME}" >/dev/null 2>&1; then
-    kubectl delete -k "${MANIFESTS_DIR}" --ignore-not-found || true
-    LOG "Deleted resources from kustomize"
-  else
-    LOG "Deployment ${AUTH_NAME} not present; still attempting to delete resources"
-    kubectl delete -k "${MANIFESTS_DIR}" --ignore-not-found || true
-  fi
-
-  LOG "Deleting secret auth-secrets in namespace ${AUTH_NAMESPACE} (if exists)"
+  LOG "Deleting kustomize-managed resources"
+  kubectl -n "${AUTH_NAMESPACE}" delete -k "${MANIFESTS_DIR}" --ignore-not-found || true
+  LOG "Deleting secret auth-secrets (if exists)"
   kubectl -n "${AUTH_NAMESPACE}" delete secret auth-secrets --ignore-not-found || true
-
-  LOG "Note: namespace ${AUTH_NAMESPACE} retained. If you want to remove the namespace, run: kubectl delete ns ${AUTH_NAMESPACE}"
+  LOG "Note: namespace ${AUTH_NAMESPACE} is retained by default."
 }
 
 # Main driver
@@ -548,23 +538,21 @@ render_templates
 case "${MODE}" in
   rollout)
     LOG "Starting rollout (idempotent) for ${AUTH_NAME} in ${AUTH_NAMESPACE}"
-    # ensure namespace exists
     kubectl create namespace "${AUTH_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1
+
     derive_database_url
     ensure_auth_secret
 
-    # perform diff+apply idempotently
     diff_and_apply
     rc=$?
     if [[ ${rc} -eq 2 ]]; then
-      LOG "No manifest changes detected; skipping rollout (no restarts)."
+      LOG "No manifest changes detected; skipping apply (no restarts)."
       inspect
       exit 0
     elif [[ ${rc} -ne 0 ]]; then
       FATAL "Apply failed"
     fi
 
-    # Applied changes; wait for deployment
     wait_deployment_available || FATAL "Deployment did not reach available state after apply"
     LOG "Rollout success"
     inspect
@@ -579,7 +567,7 @@ case "${MODE}" in
     ;;
 
   *)
-    LOG "Render-only mode; manifests are written to ${MANIFESTS_DIR}"
+    LOG "Render-only mode; manifests written to ${MANIFESTS_DIR}"
     LOG "To perform rollout: $0 --rollout"
     ;;
 esac

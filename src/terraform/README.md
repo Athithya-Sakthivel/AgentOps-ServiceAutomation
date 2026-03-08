@@ -1,7 +1,3 @@
-Below is a **clean rewritten `README.md`** reflecting your current architecture. It removes references to NAT-free networking and IPv6 design decisions while documenting the actual infrastructure clearly and conservatively.
-
----
-
 # AgentOps-ServiceAutomation — Terraform / OpenTofu Infrastructure
 
 ## Purpose

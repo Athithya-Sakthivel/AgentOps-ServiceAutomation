@@ -1,18 +1,11 @@
 #!/usr/bin/env bash
-# src/core/postgres_cluster.sh
-# Deterministic CNPG + Postgres rollout script.
-# - Dynamically substitutes CNPG operator image from $CNPG_IMAGE at apply time.
-# - Does NOT mutate archived operator manifest on disk.
-# - Compatible with kind or eks (controlled by K8S_CLUSTER env var).
 set -euo pipefail
 
-# === CONFIGURATION ===
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly MANIFEST_DIR="${SCRIPT_DIR}/../manifests/postgres"
 readonly ARCHIVE_DIR="src/scripts/archive"
 readonly K8S_CLUSTER="${K8S_CLUSTER:-kind}"
 
-# === STRONG DEFAULTS ===
 declare -A STORAGE_CLASS=( [kind]="local-path" [eks]="gp3" )
 declare -A PG_INSTANCES=( [kind]="1" [eks]="3" )
 declare -A PG_STORAGE_SIZE=( [kind]="5Gi" [eks]="20Gi" )
@@ -23,22 +16,18 @@ declare -A PG_MEMORY_LIMIT=( [kind]="1Gi" [eks]="2Gi" )
 declare -A OPERATOR_TIMEOUT=( [kind]="120" [eks]="300" )
 declare -A CLUSTER_WAIT_TIMEOUT=( [kind]="300" [eks]="900" )
 
-# Production-ready pinned defaults (override via env)
 export PG_IMAGE="${PG_IMAGE:-docker.io/athithya5354/postgresql:16.10-minimal-trixie}"
 export CNPG_IMAGE="${CNPG_IMAGE:-docker.io/athithya5354/cloudnative-pg:1.28.1}"
 
-# === VALIDATION ===
 if [[ ! "${STORAGE_CLASS[$K8S_CLUSTER]+isset}" ]]; then
   echo "[ERROR] Unsupported K8S_CLUSTER='$K8S_CLUSTER'. Supported: kind, eks" >&2
   exit 1
 fi
 
-# === LOGGING / HELPERS ===
 log()    { printf '[%s] [%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$K8S_CLUSTER" "$*" >&2; }
 fatal()  { printf '[ERROR] [%s] %s\n' "$K8S_CLUSTER" "$*" >&2; exit 1; }
 require_bin(){ command -v "$1" >/dev/null 2>&1 || fatal "$1 not found in PATH"; }
 
-# === RENDER MANIFESTS ===
 render_manifests() {
   log "rendering manifests for K8S_CLUSTER=$K8S_CLUSTER"
   mkdir -p "${MANIFEST_DIR}"
@@ -53,22 +42,11 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: apps
-  labels:
-    db-access: "allow"
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: ray
-  labels:
-    db-access: "allow"
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: cnpg-system
-  labels:
-    db-access: "allow"
 EOFNS
 
   cat > "${MANIFEST_DIR}/cluster.yaml" <<EOFCLUSTER
@@ -103,7 +81,7 @@ EOFCLUSTER
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-from-labeled-namespaces
+  name: allow-cnpg-operator-and-apps
   namespace: databases
 spec:
   podSelector:
@@ -115,7 +93,10 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels:
-              db-access: "allow"
+              kubernetes.io/metadata.name: apps
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cnpg-system
       ports:
         - protocol: TCP
           port: 5432
@@ -135,26 +116,19 @@ EOFK
   log "manifests rendered to ${MANIFEST_DIR}"
 }
 
-# === OPERATOR MANAGEMENT ===
-# Apply the archived operator manifest, but first substitute operator image with $CNPG_IMAGE.
-# This avoids editing the archived file and keeps apply deterministic.
 apply_operator() {
   require_bin kubectl
   local operator_manifest="${ARCHIVE_DIR}/cnpg-1.28.1.yaml"
   [[ -f "${operator_manifest}" ]] || fatal "operator manifest missing: ${operator_manifest}"
 
   log "preparing operator manifest with CNPG_IMAGE=${CNPG_IMAGE}"
-  # create temporary file and ensure cleanup
   local tmp=""
   tmp="$(mktemp)" || fatal "mktemp failed"
   trap '[[ -n "${tmp:-}" ]] && rm -f "$tmp"' RETURN
 
-  # Escape ampersand and backslashes in CNPG_IMAGE for safe sed replacement
   local escaped
   escaped="$(printf '%s' "$CNPG_IMAGE" | sed -e 's/[\/&]/\\&/g')"
 
-  # Replace occurrences of the upstream operator image tag with the provided CNPG_IMAGE.
-  # Pattern: ghcr.io/cloudnative-pg/cloudnative-pg:<anything-not-space-or-quote>
   sed -E "s|ghcr.io/cloudnative-pg/cloudnative-pg:[^[:space:]\"'']*|${escaped}|g" "${operator_manifest}" > "${tmp}"
 
   log "applying CNPG operator (server-side apply) from substituted manifest"
@@ -172,7 +146,6 @@ apply_operator() {
   fatal "operator apply failed"
 }
 
-# === WAIT HELPERS ===
 wait_deployment() {
   local ns="$1" name="$2" timeout="$3"
   log "waiting for deployment ${name} in ${ns} (timeout ${timeout}s)"
@@ -183,7 +156,6 @@ wait_deployment() {
   fi
 }
 
-# === DIAGNOSTICS ===
 dump_diagnostics() {
   log "=== OPERATOR: pods ==="
   kubectl -n cnpg-system get pods -o wide || true
@@ -199,7 +171,6 @@ dump_diagnostics() {
   kubectl -n databases get pvc -o wide || true
 }
 
-# === ROLLOUT ===
 rollout() {
   require_bin kubectl
 
@@ -251,7 +222,6 @@ NEXT STEPS:
 EOFCONNECTION
 }
 
-# === CLI INTERFACE ===
 case "${1:-}" in
   --rollout)
     log "starting rollout for K8S_CLUSTER=$K8S_CLUSTER"

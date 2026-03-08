@@ -1,294 +1,335 @@
-<!--
-Contract summary (deterministic contracts):
-- JWT stored in localStorage under key: "app_jwt".
-- Auth endpoints:
-    GET  /auth/login             -> HTML page for SSO buttons (user-facing)
-    GET  /auth/login/start/{p}   -> starts provider flow (redirect 302)
-    GET  /auth/callback/{p}      -> provider redirects here; server will return HTML that writes localStorage.app_jwt
-    GET  /auth/me                -> JSON: { "authenticated": true, "user": { <JWT payload> } }
-    GET  /auth/logout            -> HTML that clears client side state
-- All other app APIs remain under /api/ and require Authorization: Bearer <token> (if protected).
-- Frontend will never attempt local username/password login to auth server.
--->
-
-<!DOCTYPE html>
+<!-- src/services/frontend/index.html -->
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <title>Agentic Platform</title>
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Secure Microservices — Tasks</title>
 
-    <script>
-    // central token key used by frontend and auth server
-    const TOKEN_KEY = 'app_jwt';
+  <!-- Tailwind (CDN build suitable for prototyping) -->
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
 
-    // Attach JWT automatically to htmx requests
-    document.body.addEventListener('htmx:configRequest', (evt) => {
-        const token = localStorage.getItem(TOKEN_KEY);
-        if (token) evt.detail.headers['Authorization'] = 'Bearer ' + token;
-    });
+  <!-- HTMX -->
+  <script src="https://unpkg.com/htmx.org@1.9.3"></script>
 
-    // Global response handling: on 401 clear token and redirect to SSO login page
-    document.body.addEventListener('htmx:afterRequest', (evt) => {
-        try {
-            const status = evt.detail.xhr.status;
-            if (status === 401) {
-                localStorage.removeItem(TOKEN_KEY);
-                window.location.href = '/auth/login';
-            }
-        } catch (e) { /* ignore */ }
-    });
-
-    // Programmatic fetch wrapper that injects token and returns parsed json or throws
-    async function apiFetch(path, opts = {}) {
-        opts.headers = opts.headers || {};
-        const token = localStorage.getItem(TOKEN_KEY);
-        if (token) opts.headers['Authorization'] = 'Bearer ' + token;
-        if (!opts.headers['Content-Type'] && opts.body) opts.headers['Content-Type'] = 'application/json';
-        const res = await fetch(path, opts);
-        if (!res.ok) {
-            const text = await res.text().catch(() => '');
-            const err = new Error(`HTTP ${res.status}: ${text || res.statusText}`);
-            err.status = res.status;
-            throw err;
-        }
-        // No-content
-        if (res.status === 204) return null;
-        const ct = res.headers.get('Content-Type') || '';
-        if (ct.includes('application/json')) return res.json();
-        return res.text();
-    }
-
-    function redirectToSSO() {
-        // deterministic path: auth server's login UI page (shows provider buttons)
-        window.location.href = '/auth/login';
-    }
-
-    // Called on page load
-    function checkAuth() {
-        const token = localStorage.getItem(TOKEN_KEY);
-        if (!token) {
-            showLogin();
-            return;
-        }
-        fetch('/auth/me', { headers: { 'Authorization': 'Bearer ' + token } })
-            .then(r => r.ok ? r.json() : Promise.reject())
-            .then(data => {
-                // /auth/me response shape: { authenticated: true, user: <jwt-payload> }
-                if (!data || !data.user) throw new Error('Invalid /auth/me response');
-                currentUser = data.user;
-                showApp(currentUser);
-            })
-            .catch(() => {
-                localStorage.removeItem(TOKEN_KEY);
-                showLogin();
-            });
-    }
-
-    // UI helpers
-    function showLogin() {
-        // Give user a single deterministic SSO entrypoint
-        document.getElementById('login-view').classList.remove('hidden');
-        document.getElementById('main-view').classList.add('hidden');
-    }
-
-    function showApp(user) {
-        document.getElementById('login-view').classList.add('hidden');
-        document.getElementById('main-view').classList.remove('hidden');
-        document.getElementById('user-email').textContent = user.email || '';
-        loadDashboard();
-        showPage('dashboard');
-    }
-
-    function showPage(pageId) {
-        document.querySelectorAll('.page-section').forEach(el => el.classList.add('hidden'));
-        const target = document.getElementById('page-' + pageId);
-        if (target) target.classList.remove('hidden');
-        if (pageId === 'workflows') loadWorkflows();
-        if (pageId === 'approvals') loadApprovals();
-    }
-
-    async function loadDashboard() {
-        try {
-            const [wf, ap] = await Promise.all([
-                apiFetch('/api/v1/workflows').catch(() => []),
-                apiFetch('/api/v1/approvals').catch(() => [])
-            ]);
-            document.getElementById('stat-workflows').textContent = Array.isArray(wf) ? wf.length : '-';
-            document.getElementById('stat-approvals').textContent = Array.isArray(ap) ? ap.length : '-';
-            document.getElementById('stat-pending').textContent = Array.isArray(ap) ? ap.filter(x => x.status === 'pending').length : '-';
-        } catch (e) { console.error('[dash] load error', e); }
-    }
-
-    async function loadWorkflows() {
-        try {
-            const data = await apiFetch('/api/v1/workflows');
-            const tbody = document.getElementById('workflows-body');
-            tbody.innerHTML = (Array.isArray(data) ? data : []).map(w => `
-                <tr class="border-b">
-                    <td class="p-3 font-mono text-sm">${w.id}</td>
-                    <td class="p-3"><span class="px-2 py-1 rounded text-xs ${getStatusColor(w.status)}">${w.status}</span></td>
-                    <td class="p-3 text-sm">${new Date(w.created_at).toLocaleString()}</td>
-                    <td class="p-3 text-sm">${new Date(w.updated_at).toLocaleString()}</td>
-                </tr>
-            `).join('');
-        } catch (e) { console.error('[wf] load error', e); }
-    }
-
-    async function loadApprovals() {
-        try {
-            const data = await apiFetch('/api/v1/approvals');
-            if (!Array.isArray(data)) throw new Error('Unexpected approvals response');
-            const tbody = document.getElementById('approvals-body');
-            tbody.innerHTML = data.map(a => `
-                <tr class="border-b">
-                    <td class="p-3 font-mono text-sm">${a.id}</td>
-                    <td class="p-3 font-mono text-sm">${a.workflow_id}</td>
-                    <td class="p-3 text-sm">${a.action_type}</td>
-                    <td class="p-3 text-sm">$${(a.amount || 0).toFixed(2)}</td>
-                    <td class="p-3"><span class="px-2 py-1 rounded text-xs ${getStatusColor(a.status)}">${a.status}</span></td>
-                    <td class="p-3">
-                        ${a.status === 'pending' ? `
-                            <button onclick="approveAction('${a.id}', 'approve')" class="mr-2 px-3 py-1 bg-green-600 text-white rounded text-xs hover:bg-green-700">Approve</button>
-                            <button onclick="approveAction('${a.id}', 'reject')" class="px-3 py-1 bg-red-600 text-white rounded text-xs hover:bg-red-700">Reject</button>
-                        ` : '<span class="text-gray-400">-</span>'}
-                    </td>
-                </tr>
-            `).join('');
-        } catch (err) {
-            if (err && err.status === 403) {
-                document.getElementById('approvals-body').innerHTML = '<tr><td colspan="6" class="p-4 text-red-500">Admin access required</td></tr>';
-            } else {
-                console.error('[ap] load error', err);
-                document.getElementById('approvals-body').innerHTML = '<tr><td colspan="6" class="p-4 text-red-500">Failed to load approvals</td></tr>';
-            }
-        }
-    }
-
-    function getStatusColor(status) {
-        if (status === 'completed' || status === 'approved') return 'bg-green-100 text-green-800';
-        if (status === 'pending') return 'bg-yellow-100 text-yellow-800';
-        return 'bg-red-100 text-red-800';
-    }
-
-    async function approveAction(id, decision) {
-        try {
-            await apiFetch(`/api/v1/approvals/${id}`, {
-                method: 'POST',
-                body: JSON.stringify({ decision })
-            });
-            await loadApprovals();
-        } catch (e) {
-            alert('Failed: ' + (e.message || e));
-        }
-    }
-
-    function logout() {
-        // clear client token then navigate to centralized logout UI (auth server)
-        localStorage.removeItem(TOKEN_KEY);
-        // call auth logout endpoint which returns client-side clearing HTML
-        window.location.href = '/auth/logout';
-    }
-
-    // wire simple event for SSO login button
-    function startSSO(provider) {
-        // deterministic redirect path
-        window.location.href = `/auth/login/start/${provider}`;
-    }
-
-    // currentUser holds JWT payload from /auth/me user
-    let currentUser = null;
-    </script>
+  <style>
+    /* Small polish */
+    body { background: #f8fafc; }
+    .card { background: white; border-radius: 0.5rem; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+    .muted { color: #6b7280; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", monospace; }
+  </style>
 </head>
-<body class="bg-gray-50 text-gray-800 font-sans" onload="checkAuth()">
+<body class="min-h-screen antialiased text-gray-800">
+  <div class="max-w-4xl mx-auto p-6">
 
-    <div id="app-container">
-        <!-- Login View - single SSO entry -->
-        <div id="login-view" class="hidden max-w-md mx-auto mt-20 p-6 bg-white rounded shadow text-center">
-            <h2 class="text-2xl font-bold mb-4">Sign in</h2>
-            <div class="flex flex-col gap-3">
-                <button onclick="startSSO('google')" class="w-full inline-flex items-center justify-center border rounded py-2 px-3 mb-0 hover:bg-gray-50 transition-colors">
-                    Continue with Google
-                </button>
-                <button onclick="startSSO('microsoft')" class="w-full inline-flex items-center justify-center border rounded py-2 px-3 mb-0 hover:bg-gray-50 transition-colors">
-                    Continue with Microsoft
-                </button>
-            </div>
-            <p class="mt-4 text-sm text-gray-500">Use your organization account to sign in.</p>
+    <!-- Header -->
+    <header class="flex items-center justify-between mb-6">
+      <div>
+        <h1 class="text-2xl font-semibold">Tasks • Secure Microservices</h1>
+        <div class="text-sm muted">Minimal HTMX + Tailwind SPA for task creation & activity stream</div>
+      </div>
+
+      <!-- Auth area -->
+      <div class="flex items-center space-x-3">
+        <div id="auth-status" class="text-sm mono muted">checking auth…</div>
+        <button id="btn-login" class="px-3 py-1 bg-blue-600 text-white rounded hidden">Sign in</button>
+        <button id="btn-logout" class="px-3 py-1 bg-gray-200 text-gray-800 rounded hidden">Sign out</button>
+      </div>
+    </header>
+
+    <!-- Main layout -->
+    <main class="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+      <!-- Left: Task form + list -->
+      <section class="md:col-span-2 space-y-4">
+        <div class="card p-4">
+          <h2 class="text-lg font-medium mb-2">Create a task</h2>
+          <form id="task-form" class="flex space-x-2" hx-post="" hx-vals='{"title":""}' onsubmit="return false;">
+            <input id="task-title" class="flex-1 px-3 py-2 border rounded" placeholder="Task title" />
+            <button id="task-submit" class="px-4 py-2 bg-indigo-600 text-white rounded" type="button">Create</button>
+          </form>
+          <p id="task-note" class="text-sm muted mt-2">You must be signed in to create a task.</p>
         </div>
 
-        <!-- Main App View -->
-        <div id="main-view" class="hidden min-h-screen flex flex-col">
-            <header class="bg-white border-b p-4 flex justify-between items-center">
-                <nav class="flex gap-6">
-                    <a href="javascript:void(0)" class="hover:text-blue-600" onclick="showPage('dashboard')">Dashboard</a>
-                    <a href="javascript:void(0)" class="hover:text-blue-600" onclick="showPage('workflows')">Workflows</a>
-                    <a href="javascript:void(0)" class="hover:text-blue-600" onclick="showPage('approvals')">Approvals</a>
-                </nav>
-                <div class="flex items-center gap-4">
-                    <span id="user-email" class="text-sm"></span>
-                    <button onclick="logout()" class="text-sm text-red-600 hover:underline">Logout</button>
-                </div>
-            </header>
-
-            <main class="flex-1 p-8">
-                <div id="page-dashboard" class="page-section">
-                    <h1 class="text-3xl font-bold mb-6">Dashboard</h1>
-                    <div class="grid grid-cols-3 gap-6">
-                        <div class="bg-white p-6 rounded shadow">
-                            <div class="text-3xl font-bold" id="stat-workflows">-</div>
-                            <div class="text-gray-500">Total Workflows</div>
-                        </div>
-                        <div class="bg-white p-6 rounded shadow">
-                            <div class="text-3xl font-bold" id="stat-approvals">-</div>
-                            <div class="text-gray-500">Total Approvals</div>
-                        </div>
-                        <div class="bg-white p-6 rounded shadow">
-                            <div class="text-3xl font-bold text-yellow-600" id="stat-pending">-</div>
-                            <div class="text-gray-500">Pending Approvals</div>
-                        </div>
-                    </div>
-                </div>
-
-                <div id="page-workflows" class="page-section hidden">
-                    <h1 class="text-3xl font-bold mb-6">Workflows</h1>
-                    <div id="workflows-list" class="bg-white rounded shadow overflow-hidden">
-                        <table class="w-full text-left">
-                            <thead class="bg-gray-100 border-b">
-                                <tr>
-                                    <th class="p-3">ID</th>
-                                    <th class="p-3">Status</th>
-                                    <th class="p-3">Created</th>
-                                    <th class="p-3">Updated</th>
-                                </tr>
-                            </thead>
-                            <tbody id="workflows-body"></tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <div id="page-approvals" class="page-section hidden">
-                    <h1 class="text-3xl font-bold mb-6">Approvals</h1>
-                    <div id="approvals-list" class="bg-white rounded shadow overflow-hidden">
-                        <table class="w-full text-left">
-                            <thead class="bg-gray-100 border-b">
-                                <tr>
-                                    <th class="p-3">ID</th>
-                                    <th class="p-3">Workflow</th>
-                                    <th class="p-3">Action</th>
-                                    <th class="p-3">Amount</th>
-                                    <th class="p-3">Status</th>
-                                    <th class="p-3">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="approvals-body"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </main>
+        <div class="card p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-lg font-medium">Tasks</h2>
+            <button id="refresh-tasks" class="text-sm text-indigo-600 hover:underline">Refresh</button>
+          </div>
+          <div id="tasks-list" class="space-y-2">
+            <!-- HTMX will load task items here -->
+            <div class="text-sm muted">Loading tasks...</div>
+          </div>
         </div>
-    </div>
+      </section>
+
+      <!-- Right: Activity stream -->
+      <aside class="space-y-4">
+        <div class="card p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-lg font-medium">My Activity</h2>
+            <div class="text-xs muted">updates every 5s</div>
+          </div>
+          <div id="activity-list" class="space-y-2 text-sm muted">
+            <!-- HTMX will populate -->
+            <div>Loading activity…</div>
+          </div>
+        </div>
+
+        <div class="card p-4">
+          <h3 class="text-sm font-medium mb-2">Connection info</h3>
+          <div class="text-xs muted">
+            <div id="cfg-auth">Auth: <span class="mono">/auth</span></div>
+            <div id="cfg-task">Tasks API: <span class="mono">/tasks</span></div>
+            <div id="cfg-activity">Activity API: <span class="mono">/activity</span></div>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <!-- Footer -->
+    <footer class="mt-6 text-xs muted">
+      Tokens are stored in <span class="mono">localStorage.app_jwt</span>. This page uses HTMX for progressive interactions and adds Authorization headers to outgoing requests.
+    </footer>
+  </div>
+
+<script>
+/*
+  Single-file HTMX SPA that integrates with:
+    - AUTH service (login page) at AUTH_BASE + /login
+    - TASK service at TASK_API (POST /tasks, GET /tasks)
+    - ACTIVITY service at ACT_API (GET /activity/user/{user}, POST /activity)
+  Configuration: set globals before including this file or set them here.
+*/
+
+const AUTH_BASE = window.AUTH_BASE || "http://127.0.0.1:18200";
+const TASK_API = window.TASK_API || "http://127.0.0.1:8001";
+const ACT_API  = window.ACT_API  || "http://127.0.0.1:8002";
+
+// Populate connection info
+document.getElementById('cfg-auth').querySelector('span').textContent = AUTH_BASE + '/';
+document.getElementById('cfg-task').querySelector('span').textContent = TASK_API + '/';
+document.getElementById('cfg-activity').querySelector('span').textContent = ACT_API + '/';
+
+// Utility: read stored JWT
+function getToken() {
+  return localStorage.getItem('app_jwt') || null;
+}
+function setToken(t) {
+  if (t) localStorage.setItem('app_jwt', t);
+  else localStorage.removeItem('app_jwt');
+}
+
+// decode JWT payload (no verification; purely to read sub/email)
+function decodeJwtPayload(token) {
+  try {
+    const payload = token.split('.')[1];
+    const padded = payload.padEnd(Math.ceil(payload.length/4)*4, '=');
+    return JSON.parse(atob(padded));
+  } catch (e) {
+    return null;
+  }
+}
+
+// HTMX: attach Authorization header and X-Request-ID to every request
+document.body.addEventListener('htmx:configRequest', (evt) => {
+  const token = getToken();
+  if (token) {
+    evt.detail.headers['Authorization'] = 'Bearer ' + token;
+  }
+  // Add request id (helps correlate logs)
+  evt.detail.headers['X-Request-ID'] = 'req-' + Math.random().toString(36).slice(2,10);
+});
+
+// Render tasks list (fetch via HTMX-like pattern using fetch, so we can control errors)
+async function loadTasks() {
+  const el = document.getElementById('tasks-list');
+  el.innerHTML = '<div class="text-sm muted">Loading tasks…</div>';
+  try {
+    const token = getToken();
+    const headers = { 'Accept': 'application/json' };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    const res = await fetch(`${TASK_API}/tasks`, { headers });
+    if (!res.ok) {
+      if (res.status === 401) {
+        el.innerHTML = '<div class="text-sm text-red-600">Unauthorized — please sign in.</div>';
+        return;
+      }
+      const txt = await res.text();
+      el.innerHTML = `<div class="text-sm text-red-600">Error loading tasks: ${res.status} ${txt}</div>`;
+      return;
+    }
+    const data = await res.json();
+    if (!Array.isArray(data) || data.length === 0) {
+      el.innerHTML = '<div class="text-sm muted">No tasks yet.</div>';
+      return;
+    }
+    el.innerHTML = '';
+    for (const t of data) {
+      const card = document.createElement('div');
+      card.className = 'p-3 border rounded flex items-start justify-between';
+      card.innerHTML = `
+        <div>
+          <div class="font-medium">${escapeHtml(t.title)}</div>
+          <div class="text-xs muted">#${t.id} • by <span class="mono">${escapeHtml(t.created_by)}</span> • <span class="muted text-xs">${escapeHtml(t.created_at)}</span></div>
+        </div>
+      `;
+      el.appendChild(card);
+    }
+  } catch (err) {
+    el.innerHTML = '<div class="text-sm text-red-600">Network error loading tasks</div>';
+  }
+}
+
+// Load activity for the current user
+async function loadActivity() {
+  const el = document.getElementById('activity-list');
+  el.innerHTML = '<div class="text-sm muted">Loading activity…</div>';
+  const token = getToken();
+  if (!token) {
+    el.innerHTML = '<div class="text-sm muted">Sign in to see your activity.</div>';
+    return;
+  }
+  const payload = decodeJwtPayload(token);
+  const user = (payload && (payload.sub || payload.email)) || null;
+  if (!user) {
+    el.innerHTML = '<div class="text-sm muted">Invalid token — cannot identify user.</div>';
+    return;
+  }
+  try {
+    const headers = { 'Accept': 'application/json', 'Authorization': 'Bearer ' + token };
+    const res = await fetch(`${ACT_API}/activity/user/${encodeURIComponent(user)}`, { headers });
+    if (!res.ok) {
+      if (res.status === 401) {
+        el.innerHTML = '<div class="text-sm text-red-600">Unauthorized — sign in again.</div>';
+        return;
+      }
+      el.innerHTML = `<div class="text-sm text-red-600">Error: ${res.status}</div>`;
+      return;
+    }
+    const arr = await res.json();
+    if (!Array.isArray(arr) || arr.length === 0) {
+      el.innerHTML = '<div class="text-sm muted">No activity yet.</div>';
+      return;
+    }
+    el.innerHTML = '';
+    for (const a of arr.slice(0, 50)) {
+      const row = document.createElement('div');
+      row.className = 'p-2 border rounded';
+      row.innerHTML = `<div class="text-sm"><strong>${escapeHtml(a.type)}</strong> — <span class="muted">${escapeHtml(String(a.created_at || ''))}</span></div>
+        <div class="text-xs mono muted">task:${escapeHtml(String(a.task_id || ''))} user:${escapeHtml(String(a.user_id || a.user || ''))}</div>`;
+      el.appendChild(row);
+    }
+  } catch (err) {
+    el.innerHTML = '<div class="text-sm text-red-600">Network error loading activity</div>';
+  }
+}
+
+// Create task (performed via fetch to allow easy error handling)
+async function createTask() {
+  const titleEl = document.getElementById('task-title');
+  const title = titleEl.value.trim();
+  if (!title) return alert('Enter a title');
+  const token = getToken();
+  if (!token) return alert('Sign in first');
+
+  const btn = document.getElementById('task-submit');
+  btn.disabled = true;
+  btn.textContent = 'Creating…';
+
+  try {
+    const res = await fetch(`${TASK_API}/tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({ title })
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      alert('Create failed: ' + res.status + ' — ' + text);
+      return;
+    }
+    // success: clear input, refresh tasks and activity
+    titleEl.value = '';
+    await loadTasks();
+    await loadActivity();
+  } catch (err) {
+    alert('Network error creating task');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create';
+  }
+}
+
+// Login / logout handlers
+document.getElementById('btn-login').addEventListener('click', () => {
+  // open auth login page (auth server will write token into localStorage via callback HTML)
+  window.location.href = AUTH_BASE + '/login';
+});
+document.getElementById('btn-logout').addEventListener('click', () => {
+  setToken(null);
+  updateAuthUI();
+  loadTasks();
+  loadActivity();
+});
+
+// UI wiring
+document.getElementById('task-submit').addEventListener('click', createTask);
+document.getElementById('refresh-tasks').addEventListener('click', loadTasks);
+
+// Escape helper
+function escapeHtml(s) {
+  if (!s) return '';
+  return String(s).replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+// Update auth UI state
+function updateAuthUI() {
+  const token = getToken();
+  const status = document.getElementById('auth-status');
+  const btnLogin = document.getElementById('btn-login');
+  const btnLogout = document.getElementById('btn-logout');
+  const note = document.getElementById('task-note');
+
+  if (token) {
+    const payload = decodeJwtPayload(token) || {};
+    const name = payload.name || payload.email || payload.sub || 'user';
+    status.textContent = `Signed in • ${name}`;
+    btnLogin.classList.add('hidden');
+    btnLogout.classList.remove('hidden');
+    note.textContent = 'You are signed in. Create tasks with the form above.';
+  } else {
+    status.textContent = 'Not signed in';
+    btnLogin.classList.remove('hidden');
+    btnLogout.classList.add('hidden');
+    note.textContent = 'You must be signed in to create a task.';
+  }
+}
+
+// On load: update UI, load tasks, and poll activity every 5s
+async function appInit() {
+  updateAuthUI();
+  await loadTasks();
+  await loadActivity();
+  // poll activity every 5s
+  setInterval(loadActivity, 5000);
+}
+
+// If auth callback will write token to localStorage and redirect back to this page.
+// Detect token in URL fragment or query (some auth flows may send token). This app expects auth server to write token to localStorage (auth callback script). For robustness, check query param 'token' and store it.
+(function captureTokenFromQuery() {
+  const url = new URL(window.location.href);
+  const t = url.searchParams.get('token') || url.hash.match(/token=([^&]+)/)?.[1];
+  if (t) {
+    setToken(t);
+    // remove token from URL to avoid leakage in logs
+    history.replaceState({}, document.title, url.pathname + url.search.split('&token=')[0]);
+  }
+})();
+
+// initialize
+appInit();
+
+</script>
 </body>
 </html>

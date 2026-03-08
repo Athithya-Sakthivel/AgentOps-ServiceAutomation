@@ -101,6 +101,30 @@ push-auth:
 	git commit -m "updating auth server"
 	git push origin main
 
+push-ts:
+	ruff check src/services/task-service --fix
+	git add .github src/services/task-service
+	gitleaks detect --source src/services/task-service --no-git --exit-code 1
+	git commit -m "updating task service"
+	git push origin main
+
+
+push-ts:
+	ruff check src/services/task-service --fix
+	git add .github src/services/task-service
+	gitleaks detect --source src/services/task-service --no-git --exit-code 1
+	git commit -m "updating task service"
+	git push origin main
+
+
+push-as:
+	ruff check src/services/activity-service --fix
+	git add .github src/services/activity-service
+	gitleaks detect --source src/services/activity-service --no-git --exit-code 1
+	git commit -m "updating activity service"
+	git push origin main
+
+
 push-all:
 	ruff check . --fix
 	git add .
@@ -121,10 +145,10 @@ clean:
 
 
 rollout-valkey:
-	bash src/platform/valkey.sh --rollout
+	bash src/core/valkey.sh --rollout
 
 delete-valkey:
-	bash src/platform/valkey.sh --delete --yes
+	bash src/core/valkey.sh --delete --yes
 
 
 
