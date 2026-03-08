@@ -1,0 +1,174 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth
+  namespace: app
+  labels:
+    app: auth
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auth
+  template:
+    metadata:
+      labels:
+        app: auth
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      serviceAccountName: auth
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: auth
+          image: athithya5354/agentops-auth:multiarch-v0.2
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: database-url
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: jwt-secret
+            - name: JWT_SECRET_PREVIOUS
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: jwt-secret-previous
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: session-secret
+            - name: GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: google-client-id
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: google-client-secret
+            - name: MICROSOFT_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: microsoft-client-id
+            - name: MICROSOFT_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: microsoft-client-secret
+            - name: AUTH_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: auth-config
+                  key: AUTH_BASE_URL
+            - name: JWT_EXP_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: auth-config
+                  key: JWT_EXP_SECONDS
+            - name: JWT_ISS
+              valueFrom:
+                configMapKeyRef:
+                  name: auth-config
+                  key: JWT_ISS
+            - name: JWT_AUD
+              valueFrom:
+                configMapKeyRef:
+                  name: auth-config
+                  key: JWT_AUD
+            - name: GOOGLE_ALLOWED_DOMAINS
+              valueFrom:
+                configMapKeyRef:
+                  name: auth-config
+                  key: GOOGLE_ALLOWED_DOMAINS
+            - name: MICROSOFT_ALLOWED_DOMAINS
+              valueFrom:
+                configMapKeyRef:
+                  name: auth-config
+                  key: MICROSOFT_ALLOWED_DOMAINS
+            - name: MICROSOFT_ALLOWED_TENANT_IDS
+              valueFrom:
+                configMapKeyRef:
+                  name: auth-config
+                  key: MICROSOFT_ALLOWED_TENANT_IDS
+            - name: SESSION_COOKIE_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: auth-config
+                  key: SESSION_COOKIE_NAME
+            - name: SESSION_COOKIE_SECURE
+              valueFrom:
+                configMapKeyRef:
+                  name: auth-config
+                  key: SESSION_COOKIE_SECURE
+            - name: SESSION_COOKIE_SAMESITE
+              valueFrom:
+                configMapKeyRef:
+                  name: auth-config
+                  key: SESSION_COOKIE_SAMESITE
+            - name: SESSION_COOKIE_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: auth-config
+                  key: SESSION_COOKIE_DOMAIN
+            - name: SESSION_COOKIE_MAX_AGE
+              valueFrom:
+                configMapKeyRef:
+                  name: auth-config
+                  key: SESSION_COOKIE_MAX_AGE
+            - name: PKCE_TTL_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: auth-config
+                  key: PKCE_TTL_SECONDS
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: "kubernetes.io/hostname"
+                labelSelector:
+                  matchLabels:
+                    app: auth
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: "kubernetes.io/hostname"
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: auth

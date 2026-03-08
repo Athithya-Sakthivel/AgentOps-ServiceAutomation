@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auth-config
+  namespace: app
+  labels:
+    app.kubernetes.io/name: auth
+    app.kubernetes.io/managed-by: infra-generator
+data:
+  AUTH_BASE_URL: ""
+  JWT_EXP_SECONDS: "1800"
+  JWT_ISS: "agentic-platform"
+  JWT_AUD: "agent-frontend"
+  GOOGLE_ALLOWED_DOMAINS: "company.com,gmail.com"
+  MICROSOFT_ALLOWED_DOMAINS: "outlook.com, company.com, hotmail.com"
+  MICROSOFT_ALLOWED_TENANT_IDS: "b8a65a11-9d1c-4d48-b9f6-dabfc67f2e4b"
+  SESSION_COOKIE_NAME: "auth_session"
+  SESSION_COOKIE_SECURE: "false"
+  SESSION_COOKIE_SAMESITE: "lax"
+  SESSION_COOKIE_DOMAIN: ""
+  SESSION_COOKIE_MAX_AGE: "3600"
+  PKCE_TTL_SECONDS: "300"

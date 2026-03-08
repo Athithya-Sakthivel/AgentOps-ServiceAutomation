@@ -87,18 +87,38 @@ delete-s3:
 	fi
 	
 
-
-
-
 push-frontend:
+	ruff check src/services/frontend/ --fix
 	git add .github/workflows/ src/services/frontend/
+	gitleaks detect --source src/services/frontend/ --no-git --exit-code 1
 	git commit -m "updating nginx SPA image"
 	git push origin main
 
 push-auth:
+	ruff check src/services/auth/ --fix
 	git add .github src/services/auth/
+	gitleaks detect --source src/services/auth/ --no-git --exit-code 1
 	git commit -m "updating auth server"
 	git push origin main
+
+	
+
+push:
+	ruff check . --fix
+	git add .
+	git commit -m "new"
+	gitleaks detect --source . --no-git --exit-code 1
+	git push origin main --force
+
+
+clean:
+	find . -type d -name "__pycache__" -exec rm -rf {} +
+	find . -type f -name "*.pyc" -delete
+	find . -type f -name "*.log" ! -path "./.git/*" -delete
+	find . -type f -name "*.pulumi-logs" ! -path "./.git/*" -delete
+	clear
+
+
 
 rollout-valkey:
 	bash src/platform/valkey.sh --rollout
@@ -317,18 +337,7 @@ test-retriever:
 docker-login:
 	echo "$$DOCKER_PASSWORD" | docker login -u "$$DOCKER_USERNAME" --password-stdin
 
-push:
-	git add .
-	git commit -m "new"
-	git push origin main --force
 
-
-clean:
-	find . -type d -name "__pycache__" -exec rm -rf {} +
-	find . -type f -name "*.pyc" -delete
-	find . -type f -name "*.log" ! -path "./.git/*" -delete
-	find . -type f -name "*.pulumi-logs" ! -path "./.git/*" -delete
-	clear
 
 fix-dns: fix-kind-dns
 

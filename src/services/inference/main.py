@@ -4,7 +4,6 @@ import uuid
 import json
 import time
 import logging
-import asyncio
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
 import jwt
@@ -16,6 +15,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from agents import create_graph, AgentState
 from pg_tables import init_db
 from telemetry import setup_telemetry
+import asyncpg
 
 logging.basicConfig(
     level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper()),

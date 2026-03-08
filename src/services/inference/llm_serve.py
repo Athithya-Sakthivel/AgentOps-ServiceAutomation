@@ -1,13 +1,9 @@
 import os
-import sys
 import time
-import json
 import logging
 from typing import Any, Dict, List, Optional
 from llama_cpp import Llama
-import ray
 from ray import serve
-from ray.serve.batching import Batch
 
 logging.basicConfig(
     level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper()),

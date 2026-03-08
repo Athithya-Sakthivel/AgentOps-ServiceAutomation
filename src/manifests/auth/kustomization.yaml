@@ -1,0 +1,8 @@
+resources:
+  - secret.template.yaml
+  - configmap.template.yaml
+  - serviceaccount.yaml
+  - service.yaml
+  - deployment.yaml
+  - hpa.yaml
+namespace: app

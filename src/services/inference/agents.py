@@ -1,12 +1,9 @@
 import os
 import sys
-import uuid
 import json
 import time
 import logging
-from typing import TypedDict, List, Dict, Any, Optional, Literal, Annotated, Union
-from datetime import datetime, timezone
-from pydantic import BaseModel, Field, ValidationError, create_model
+from typing import TypedDict, List, Dict, Any, Optional, Literal
 from jsonschema import validate, ValidationError as SchemaValidationError
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.postgres import PostgresSaver
@@ -178,7 +175,6 @@ async def load_state(state: AgentState) -> AgentState:
     return state
 
 async def plan_action(state: AgentState) -> AgentState:
-    from ray import serve
     handle = serve.get_app_handle("llm_app")
     
     messages = [
@@ -320,7 +316,7 @@ async def generate_response(state: AgentState) -> AgentState:
         elif tool_name == "update_customer_note":
             response = "✅ Note added to your account."
         else:
-            response = f"✅ Request completed successfully."
+            response = "✅ Request completed successfully."
     else:
         response = "I've processed your request. How else can I help?"
     

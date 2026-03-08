@@ -1,0 +1,7 @@
+title = "gitleaks config"
+
+[[allowlists]]
+description = "Ignore archived manifest false positive"
+paths = [
+  "src/archive/plugin-barman-cloud-v0.11.0.yaml"
+]
