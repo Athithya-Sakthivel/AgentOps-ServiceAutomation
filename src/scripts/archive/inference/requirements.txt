@@ -18,10 +18,8 @@ opentelemetry-sdk==1.39.1               # Implementation of OpenTelemetry tracin
 opentelemetry-exporter-otlp-proto-grpc==1.39.1  # Exports traces to OTLP collectors via gRPC
 opentelemetry-instrumentation==0.60b1   # Base package for auto-instrumenting libraries
 opentelemetry-instrumentation-fastapi==0.60b1   # Auto-traces FastAPI request lifecycles
-opentelemetry-instrumentation-sqlalchemy==0.60b1 # Auto-traces SQLAlchemy DB queries
 opentelemetry-instrumentation-asyncpg==0.60b1   # Auto-traces asyncpg database calls
 opentelemetry-instrumentation-httpx==0.60b1     # Auto-traces outgoing HTTPX requests
-opentelemetry-instrumentation-requests==0.60b1  # Auto-traces synchronous requests calls
 opentelemetry-instrumentation-threading==0.60b1 # Traces thread execution for context propagation
 opentelemetry-instrumentation-langchain==0.52.6 # Auto-traces LangChain/LangGraph steps
 opentelemetry-semantic-conventions-ai==0.4.14   # AI-specific attribute standards for traces
