@@ -1,98 +1,292 @@
 #!/usr/bin/env bash
+# Stable installer for a single default StorageClass named "default-storage-class"
+# Supports: kind (local-path), AWS (ebs.csi.aws.com), GKE (pd.csi.storage.gke.io), AKS (disk.csi.azure.com)
+# Additionally: renders the StorageClass YAML into src/manifests/storageclass/
+
 set -euo pipefail
-
-# === CONFIGURATION ===
-readonly K8S_CLUSTER="${K8S_CLUSTER:-kind}"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(pwd)"
+readonly MANIFEST_DIR="${REPO_ROOT}/src/manifests/storageclass"
+readonly TARGET_SC="default-storage-class"
+readonly K8S_CLUSTER="${K8S_CLUSTER:-kind}"
+readonly LOCAL_PATH_PROVISIONER_TAG="${LOCAL_PATH_PROVISIONER_TAG:-v0.0.35}"
 
-# === STRONG DEFAULTS ===
-declare -A SC_NAME=( [kind]="local-path" [eks]="gp3" )
-declare -A SC_PROVISIONER=( [kind]="rancher.io/local-path" [eks]="ebs.csi.aws.com" )
-declare -A SC_BIND_MODE=( [kind]="Immediate" [eks]="WaitForFirstConsumer" )
-
-# === VALIDATION ===
-if [[ ! "${SC_NAME[$K8S_CLUSTER]+isset}" ]]; then
-  echo "[ERROR] Unsupported K8S_CLUSTER='$K8S_CLUSTER'. Supported: kind, eks" >&2
-  exit 1
-fi
-
-# === LOGGING ===
-log() { printf '[%s] [%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$K8S_CLUSTER" "$*" >&2; }
-fatal() { printf '[ERROR] [%s] %s\n' "$K8S_CLUSTER" "$*" >&2; exit 1; }
-require_bin() { command -v "$1" >/dev/null 2>&1 || fatal "$1 not found in PATH"; }
-
-# === STORAGE CLASS MANAGEMENT ===
-ensure_storage_class() {
-  local sc_name="${SC_NAME[$K8S_CLUSTER]}"
-  local provisioner="${SC_PROVISIONER[$K8S_CLUSTER]}"
-  local bind_mode="${SC_BIND_MODE[$K8S_CLUSTER]}"
-
-  log "checking for StorageClass '${sc_name}'"
-  
-  if kubectl get storageclass "${sc_name}" >/dev/null 2>&1; then
-    log "StorageClass '${sc_name}' already exists. Skipping creation."
+log(){ printf '[%s] [%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "${K8S_CLUSTER:-auto}" "$*" >&2; }
+fatal(){ printf '[ERROR] [%s] %s\n' "${K8S_CLUSTER:-auto}" "$*" >&2; exit 1; }
+require_bin(){ command -v "$1" >/dev/null 2>&1 || fatal "$1 not found in PATH"; }
+kubectl_wait_rollout(){
+  local ns="$1" deployment="$2" timeout="${3:-180s}"
+  if kubectl -n "${ns}" rollout status "deployment/${deployment}" --timeout="${timeout}" >/dev/null 2>&1; then
+    log "deployment/${deployment} in namespace ${ns} is rolled out"
     return 0
-  fi
-
-  log "StorageClass '${sc_name}' missing. Creating..."
-
-  if [[ "$K8S_CLUSTER" == "kind" ]]; then
-    # Kind: Install local-path-provisioner
-    log "installing local-path-provisioner for Kind"
-    if ! kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml >/dev/null 2>&1; then
-      fatal "failed to install local-path-provisioner"
-    fi
-    log "waiting for local-path-provisioner deployment"
-    kubectl -n local-path-storage rollout status deployment/local-path-provisioner --timeout=120s >/dev/null || \
-      log "warning: provisioner rollout timed out, proceeding anyway"
-    
-  elif [[ "$K8S_CLUSTER" == "eks" ]]; then
-    # EKS: Create gp3 StorageClass (Assumes EBS CSI Driver is installed)
-    log "creating gp3 StorageClass for EKS"
-    kubectl apply -f - <<EOFSC
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: ${sc_name}
-provisioner: ${provisioner}
-parameters:
-  type: gp3
-  encrypted: "true"
-  fsType: ext4
-reclaimPolicy: Delete
-volumeBindingMode: ${bind_mode}
-allowVolumeExpansion: true
-EOFSC
-  fi
-
-  # Verify creation
-  if kubectl get storageclass "${sc_name}" >/dev/null 2>&1; then
-    log "StorageClass '${sc_name}' created successfully."
   else
-    fatal "StorageClass '${sc_name}' verification failed after creation."
+    log "warning: rollout for ${deployment} in ${ns} did not reach ready state within ${timeout}"
+    return 1
   fi
 }
 
-# === MAIN ===
-main() {
+detect_provider(){
+  if [[ -n "${K8S_CLUSTER:-}" ]]; then
+    echo "${K8S_CLUSTER}"
+    return 0
+  fi
+  if ! kubectl version --request-timeout='5s' >/dev/null 2>&1; then
+    fatal "kubectl cannot reach cluster; ensure kubeconfig is configured"
+  fi
+  local providerID nodeName
+  nodeName="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  providerID="$(kubectl get node "${nodeName}" -o jsonpath='{.spec.providerID}' 2>/dev/null || true)"
+  if [[ "${providerID}" == aws* || "${providerID}" == aws://* ]] || kubectl get csidrivers 2>/dev/null | grep -q 'ebs.csi.aws.com'; then
+    echo "eks"
+    return 0
+  fi
+  if [[ "${providerID}" == gce* || "${providerID}" == gce://* ]] || kubectl get csidrivers 2>/dev/null | grep -q 'pd.csi.storage.gke.io'; then
+    echo "gke"
+    return 0
+  fi
+  if [[ "${providerID}" == azure* || "${providerID}" == azure://* ]] || kubectl get csidrivers 2>/dev/null | grep -q 'disk.csi.azure.com'; then
+    echo "aks"
+    return 0
+  fi
+  if [[ -z "${providerID}" ]]; then
+    if [[ "${nodeName:-}" =~ kind- ]] || kubectl get ns local-path-storage >/dev/null 2>&1; then
+      echo "kind"
+      return 0
+    fi
+  fi
+  echo "unknown"
+}
+
+ensure_single_default_annotation(){
+  mapfile -t defaults < <(kubectl get storageclass -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
+  for sc in "${defaults[@]:-}"; do
+    if [[ "${sc}" != "${TARGET_SC}" ]]; then
+      log "removing default annotation from existing StorageClass '${sc}'"
+      kubectl patch storageclass "${sc}" -p '{"metadata": {"annotations": {"storageclass.kubernetes.io/is-default-class": null}}}' >/dev/null || fatal "failed to remove default annotation from '${sc}'"
+    fi
+  done
+}
+
+save_and_apply_manifest(){
+  local out_file="$1"
+  shift
+  mkdir -p "$(dirname "${out_file}")"
+  cat - > "${out_file}"
+  log "wrote manifest to ${out_file}"
+  kubectl apply -f "${out_file}"
+}
+
+create_storageclass_kind(){
+  log "creating StorageClass ${TARGET_SC} for kind (local-path)"
+  local out="${MANIFEST_DIR}/${TARGET_SC}-kind.yaml"
+  mkdir -p "${MANIFEST_DIR}"
+  cat > "${out}" <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ${TARGET_SC}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: rancher.io/local-path
+mountOptions:
+  - noatime
+  - nodiratime
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+EOF
+  log "saved StorageClass manifest to ${out}"
+  kubectl apply -f "${out}"
+}
+
+create_storageclass_eks(){
+  log "creating StorageClass ${TARGET_SC} for EKS (AWS EBS CSI)"
+  local out="${MANIFEST_DIR}/${TARGET_SC}-eks.yaml"
+  mkdir -p "${MANIFEST_DIR}"
+  cat > "${out}" <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ${TARGET_SC}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  encrypted: "true"
+  csi.storage.k8s.io/fstype: ext4
+mountOptions:
+  - noatime
+  - nodiratime
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+EOF
+  log "saved StorageClass manifest to ${out}"
+  kubectl apply -f "${out}"
+}
+
+create_storageclass_gke(){
+  log "creating StorageClass ${TARGET_SC} for GKE (GCE PD CSI)"
+  local out="${MANIFEST_DIR}/${TARGET_SC}-gke.yaml"
+  mkdir -p "${MANIFEST_DIR}"
+  cat > "${out}" <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ${TARGET_SC}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: pd.csi.storage.gke.io
+parameters:
+  type: pd-balanced
+  csi.storage.k8s.io/fstype: ext4
+mountOptions:
+  - noatime
+  - nodiratime
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+EOF
+  log "saved StorageClass manifest to ${out}"
+  kubectl apply -f "${out}"
+}
+
+create_storageclass_aks(){
+  log "creating StorageClass ${TARGET_SC} for AKS (Azure Disk CSI)"
+  local out="${MANIFEST_DIR}/${TARGET_SC}-aks.yaml"
+  mkdir -p "${MANIFEST_DIR}"
+  cat > "${out}" <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ${TARGET_SC}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: disk.csi.azure.com
+parameters:
+  skuName: Premium_LRS
+  fsType: ext4
+mountOptions:
+  - noatime
+  - nodiratime
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+EOF
+  log "saved StorageClass manifest to ${out}"
+  kubectl apply -f "${out}"
+}
+
+install_local_path_provisioner(){
+  if kubectl -n local-path-storage get deploy local-path-provisioner >/dev/null 2>&1; then
+    log "local-path-provisioner already installed"
+    return 0
+  fi
+  log "installing local-path-provisioner ${LOCAL_PATH_PROVISIONER_TAG}"
+  kubectl apply -f "https://raw.githubusercontent.com/rancher/local-path-provisioner/${LOCAL_PATH_PROVISIONER_TAG}/deploy/local-path-storage.yaml" >/dev/null 2>&1 || fatal "failed to install local-path-provisioner"
+  kubectl_wait_rollout local-path-storage local-path-provisioner 180s || log "continuing despite local-path-provisioner not being fully ready"
+}
+
+ensure_csi_driver_present(){
+  local prov="$1"
+  if kubectl get csidrivers -o name 2>/dev/null | grep -q "${prov}"; then
+    log "CSI driver '${prov}' present"
+    return 0
+  fi
+  if kubectl get deployments --all-namespaces -o name 2>/dev/null | grep -E "$(echo "${prov}" | sed 's/\./\\./g' | sed 's/-csi//g' )" >/dev/null 2>&1; then
+    log "CSI driver pods/deployments for '${prov}' appear present (fallback check)"
+    return 0
+  fi
+  fatal "required CSI driver '${prov}' not found in cluster. Install the provider CSI driver before creating the StorageClass."
+}
+
+ensure_storage_class(){
+  local cluster="$1"
+  log "ensure_storage_class: target cluster type -> ${cluster}"
+  if kubectl get storageclass "${TARGET_SC}" >/dev/null 2>&1; then
+    log "StorageClass '${TARGET_SC}' already exists. Verifying it's valid..."
+    local prov
+    prov="$(kubectl get storageclass "${TARGET_SC}" -o jsonpath='{.provisioner}' 2>/dev/null || true)"
+    if [[ -z "${prov}" ]]; then
+      fatal "existing StorageClass '${TARGET_SC}' has no provisioner; please inspect"
+    fi
+    log "existing ${TARGET_SC} provisioner: ${prov}"
+    local is_default
+    is_default="$(kubectl get storageclass "${TARGET_SC}" -o jsonpath='{.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}' 2>/dev/null || true)"
+    if [[ "${is_default}" != "true" ]]; then
+      log "marking '${TARGET_SC}' as default and clearing other defaults"
+      ensure_single_default_annotation
+      kubectl patch storageclass "${TARGET_SC}" -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' >/dev/null || fatal "failed to set default annotation on ${TARGET_SC}"
+    fi
+    log "StorageClass '${TARGET_SC}' is present and valid. Skipping creation."
+    return 0
+  fi
+  case "${cluster}" in
+    kind)
+      install_local_path_provisioner
+      ensure_single_default_annotation
+      create_storageclass_kind
+      ;;
+    eks)
+      ensure_csi_driver_present "ebs.csi.aws.com"
+      ensure_single_default_annotation
+      create_storageclass_eks
+      ;;
+    gke)
+      ensure_csi_driver_present "pd.csi.storage.gke.io"
+      ensure_single_default_annotation
+      create_storageclass_gke
+      ;;
+    aks)
+      ensure_csi_driver_present "disk.csi.azure.com"
+      ensure_single_default_annotation
+      create_storageclass_aks
+      ;;
+    *)
+      fatal "unsupported/unknown cluster type '${cluster}'. Supported: kind, eks, gke, aks"
+      ;;
+  esac
+
+  if kubectl get storageclass "${TARGET_SC}" >/dev/null 2>&1; then
+    log "StorageClass '${TARGET_SC}' created and verified."
+  else
+    fatal "StorageClass '${TARGET_SC}' verification failed after creation."
+  fi
+}
+
+main(){
   require_bin kubectl
-  
-  log "starting storage class setup for K8S_CLUSTER=$K8S_CLUSTER"
-  ensure_storage_class
-  log "storage class setup complete."
-  
-  cat <<EOFNEXT
+  local cluster
+  cluster="$(detect_provider)"
+  if [[ "${cluster}" == "unknown" ]]; then
+    fatal "cluster provider could not be detected; set K8S_CLUSTER to one of: kind, eks, gke, aks"
+  fi
+  if [[ -n "${K8S_CLUSTER:-}" ]]; then
+    log "K8S_CLUSTER explicitly set to '${K8S_CLUSTER}' (detection result: ${cluster})"
+    cluster="${K8S_CLUSTER}"
+  else
+    log "auto-detected cluster type: ${cluster}"
+  fi
+  log "starting storage-class setup for cluster=${cluster}"
+  ensure_storage_class "${cluster}"
+  log "storage-class setup complete"
+  cat <<EOF
 
-[SUCCESS] StorageClass ready for K8S_CLUSTER=$K8S_CLUSTER
+[SUCCESS] StorageClass '${TARGET_SC}' is ready in cluster type='${cluster}'
 
-NEXT STEP:
-  Run the postgres rollout:
-  K8S_CLUSTER=${K8S_CLUSTER} bash ${SCRIPT_DIR}/postgres_cluster.sh --rollout
-EOFNEXT
+To verify:
+  kubectl get storageclass ${TARGET_SC} -o wide
+  kubectl describe storageclass ${TARGET_SC}
+
+Manifests were rendered to:
+  ${MANIFEST_DIR}/
+
+EOF
 }
 
 case "${1:-}" in
   --setup) main ;;
-  --help|-h) echo "Usage: $0 --setup" ; exit 0 ;;
+  --help|-h) printf "Usage: %s [--setup]\n" "$0" ; exit 0 ;;
   *) main ;;
 esac

@@ -11,6 +11,8 @@ __pycache__/
 .eggs/
 dist/
 build/
+.venv
+.ruff_cache
 pip-wheel-metadata/
 .venv/
 venv/
