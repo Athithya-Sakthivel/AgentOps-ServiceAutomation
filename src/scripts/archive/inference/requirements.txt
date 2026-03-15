@@ -3,6 +3,7 @@ fastapi==0.134.0                        # High-performance async API framework
 uvicorn==0.41.0                         # ASGI server to run FastAPI
 langchain==1.2.10                       # LLM orchestration utilities and chains
 langgraph==1.0.10                       # Cyclic graph engine for agentic state machines
+langchain-mcp-adapters==0.2.1
 langgraph-checkpoint-postgres==3.0.4    # Persists graph state/checkpoints to Postgres
 llamacpp==0.1.14                        # CPU/GPU efficient inference for GGUF LLM models
 sqlalchemy==2.0.47                      # ORM and SQL toolkit for database interactions

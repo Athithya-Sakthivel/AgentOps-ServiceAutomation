@@ -1,0 +1,5 @@
+
+Connection URIs (masked):
+
+postgresql://app:*****@postgres-pooler.default:5432/agents
+postgresql://app:*****@postgres-pooler.default:5432/demo_users

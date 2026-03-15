@@ -1,5 +1,5 @@
 {
-  "name": "AgentOps-ServiceAutomation",
+  "name": "AgentOps",
   "build": {
     "dockerfile": "Dockerfile",
     "context": "."
@@ -32,17 +32,15 @@
   "containerEnv": {
     "DOCKER_GID": "999",
     "DOCKER_PROXY_HOST": "",
-    "DOCKER_PROXY_PORT": ""
+    "DOCKER_PROXY_PORT": "",
+    "GOLANG_VERSION": "1.26.1",
+    "GOPATH": "/go"
   },
   "postCreateCommand": "bash src/scripts/bootstrap.sh && kind create cluster --name local-cluster",
   "customizations": {
     "vscode": {
       "extensions": [
-        "ms-vscode-remote.remote-containers",
-        "ms-python.debugpy",
-        "ms-python.python",
-        "ms-python.vscode-pylance",
-        "redhat.vscode-yaml"
+        "ms-vscode-remote.remote-containers"
       ],
       "settings": {
         "files.autoSave": "afterDelay",

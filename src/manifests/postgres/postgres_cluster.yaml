@@ -1,0 +1,35 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres-cluster
+  namespace: default
+spec:
+  instances: 2
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.3-minimal-trixie
+  bootstrap:
+    initdb:
+      database: agents
+      owner: app
+      postInitSQL:
+        - CREATE DATABASE demo_users OWNER app;
+      postInitApplicationSQL:
+        - ALTER SCHEMA public OWNER TO app;
+  storage:
+    storageClass: default-storage-class
+    size: 5Gi
+  walStorage:
+    storageClass: default-storage-class
+    size: 2Gi
+  postgresql:
+    parameters:
+      shared_buffers: "256MB"
+      max_connections: "200"
+      wal_compression: "on"
+      effective_cache_size: "1GB"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
