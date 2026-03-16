@@ -33,10 +33,10 @@ test-iac-staging:
 	bash src/terraform/run.sh --delete --yes-delete --env staging
 
 lc:
-	kind delete cluster --name local-cluster && kind create cluster --name local-cluster && bash src/core/default_storage_class.sh
+	kind delete cluster --name local-cluster || true && kind create cluster --name local-cluster && bash src/core/default_storage_class.sh
 	
 tree:
-	tree -a -I '.git|.venv|.repos|__pycache__|venv|commands.sh|raw_data|.venv-pulumi|.venv2|archive|tmp.md|docs|models|tmp|raw|chunked'
+	tree -a -I '.git|.venv|.repos|src'
 
 
 set-staging-eks-context:
@@ -48,82 +48,12 @@ set-prod-eks-context:
 set-kind-context:
 	kubectl config use-context kind-rag8s-local
 	
-s3:
-	ACCOUNT_ID=$$(aws sts get-caller-identity --query Account --output text); \
-	if [ -z "$$S3_BUCKET" ]; then \
-		BUCKET=s3-backups-bucket-$$ACCOUNT_ID; \
-	else \
-		BUCKET=$$S3_BUCKET; \
-	fi; \
-	if ! aws s3api head-bucket --bucket $$BUCKET 2>/dev/null; then \
-		aws s3api create-bucket \
-			--bucket $$BUCKET \
-			--region $$AWS_REGION \
-			--create-bucket-configuration LocationConstraint=$$AWS_REGION; \
-	else \
-		echo "Bucket $$BUCKET already exists"; \
-	fi; \
-	if ! grep -q "^export S3_BUCKET=$$BUCKET" $$HOME/.bashrc 2>/dev/null; then \
-		echo "export S3_BUCKET=$$BUCKET" >> $$HOME/.bashrc; \
-		echo "Added S3_BUCKET=$$BUCKET to ~/.bashrc"; \
-	fi
-
-delete-backups:
-	aws s3 rm s3://${S3_BUCKET}/app-postgres-objectstore/ --recursive || true
-
-delete-s3:
-	if [ -z "$$S3_BUCKET" ]; then \
-		ACCOUNT_ID=$$(aws sts get-caller-identity --query Account --output text); \
-		BUCKET=s3-backups-bucket-$$ACCOUNT_ID; \
-	else \
-		BUCKET=$$S3_BUCKET; \
-	fi; \
-	if aws s3api head-bucket --bucket $$BUCKET 2>/dev/null; then \
-		aws s3 rm s3://$$BUCKET --recursive; \
-		aws s3api delete-bucket --bucket $$BUCKET --region $$AWS_REGION; \
-		echo "Deleted $$BUCKET"; \
-	else \
-		echo "Bucket $$BUCKET does not exist"; \
-	fi
-	
-
 push-frontend:
 	ruff check src/services/frontend/ --fix
 	git add .github/workflows/ src/services/frontend/
 	gitleaks detect --source src/services/frontend/ --no-git --exit-code 1
 	git commit -m "updating nginx SPA image"
 	git push origin main
-
-push-auth:
-	ruff check src/services/auth/ --fix
-	git add .github src/services/auth/
-	gitleaks detect --source src/services/auth/ --no-git --exit-code 1
-	git commit -m "updating auth server"
-	git push origin main
-
-push-ts:
-	ruff check src/services/task-service --fix
-	git add .github src/services/task-service
-	gitleaks detect --source src/services/task-service --no-git --exit-code 1
-	git commit -m "updating task service"
-	git push origin main
-
-
-push-ts:
-	ruff check src/services/task-service --fix
-	git add .github src/services/task-service
-	gitleaks detect --source src/services/task-service --no-git --exit-code 1
-	git commit -m "updating task service"
-	git push origin main
-
-
-push-as:
-	ruff check src/services/activity-service --fix
-	git add .github src/services/activity-service
-	gitleaks detect --source src/services/activity-service --no-git --exit-code 1
-	git commit -m "updating activity service"
-	git push origin main
-
 
 push-all:
 	ruff check . --fix

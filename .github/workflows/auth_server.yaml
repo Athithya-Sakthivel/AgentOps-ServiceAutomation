@@ -1,8 +1,5 @@
 name: CI for auth service
 on:
-  push:
-    branches: [main, develop]
-    paths: [src/services/auth/**]
   workflow_dispatch:
     inputs:
       environment:
