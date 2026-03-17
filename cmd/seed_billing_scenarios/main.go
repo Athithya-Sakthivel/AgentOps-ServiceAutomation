@@ -1,262 +1,194 @@
-// File: cmd/bootstrap-demo-users/main.go
 package main
-
-// Idempotent seeder for Postgres "agents" DB.
-// - zap for structured logging
-// - gofakeit v7 deterministic fake data
-// - oklog/ulid v2 deterministic ULIDs
-// - jackc/pgx v5 pgxpool for DB pooling
-//
-// Usage:
-//   go build -o bootstrap-demo-users ./cmd/bootstrap-demo-users
-//   SEED=2026 ./bootstrap-demo-users
-//
-// Requirements:
-// - kubectl configured and secret `postgres-cluster-app` in namespace `default`
-// - Postgres pooler service named `postgres-pooler` in same namespace
-//
-// The seeder creates three tables: users, subscriptions, payments and seeds deterministic data.
 
 import (
 	"context"
-	"encoding/base64"
-	"errors"
+	"database/sql"
+	"encoding/hex"
+	"flag"
 	"fmt"
-	mrand "math/rand"
-	"net"
+	"log"
+	"math/rand"
 	"os"
-	"os/exec"
-	"os/signal"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
+	_ "github.com/lib/pq"
+
 	"github.com/brianvoe/gofakeit/v7"
+	"github.com/golang-migrate/migrate/v4"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/oklog/ulid/v2"
-	"go.uber.org/zap"
 )
 
 const (
-	k8sSecretName  = "postgres-cluster-app"
-	k8sNamespace   = "default"
-	poolerService  = "postgres-pooler"
-	poolerPort     = 5432
-	targetDB       = "agents"
-	connectTimeout = 5 // seconds
+	defaultSeedUsers        = 7
+	defaultSeedPayments     = 12
+	defaultMigrationsFolder = "file://./migrations"
 )
 
-// runCmd runs a command with context and returns combined stdout+stderr.
-func runCmd(ctx context.Context, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	out, err := cmd.CombinedOutput()
-	outStr := strings.TrimSpace(string(out))
+func main() {
+	migrationsDir := flag.String("migrations", defaultMigrationsFolder, "migrations dir (file://...)")
+	seedUsersCount := flag.Int("users", defaultSeedUsers, "number of users to seed")
+	seedPaymentsCount := flag.Int("payments", defaultSeedPayments, "number of payments to seed")
+	flag.Parse()
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		log.Fatal("DATABASE_URL environment variable is required")
+	}
+
+	seedVal := int64(2026)
+	if env := os.Getenv("SEED"); env != "" {
+		if v, err := strconv.ParseInt(env, 10, 64); err == nil {
+			seedVal = v
+		} else {
+			log.Printf("WARN: invalid SEED value %q, using default %d", env, seedVal)
+		}
+	}
+
+	start := time.Now()
+	log.Printf("START: seed_billing_scenarios - migrations=%s users=%d payments=%d seed=%d", *migrationsDir, *seedUsersCount, *seedPaymentsCount, seedVal)
+	log.Printf("DB: %s", maskDatabaseURL(databaseURL))
+
+	if err := applyMigrations(databaseURL, *migrationsDir); err != nil {
+		log.Fatalf("ERROR: applyMigrations failed: %v", err)
+	}
+	log.Printf("OK: migrations applied (dir=%s)", *migrationsDir)
+
+	ctx := context.Background()
+	pool, err := openPool(ctx, databaseURL)
 	if err != nil {
-		return outStr, fmt.Errorf("command %s %v failed: %w; output: %s", name, args, err, outStr)
+		log.Fatalf("ERROR: openPool failed: %v", err)
 	}
-	return outStr, nil
-}
+	defer pool.Close()
+	log.Printf("OK: connected to database (pgx pool)")
 
-// k8sSecretField fetches and base64-decodes a field from a k8s secret using kubectl.
-func k8sSecretField(ctx context.Context, secret, namespace, field string) (string, error) {
-	out, err := runCmd(ctx, "kubectl", "get", "secret", secret, "-n", namespace, "-o", fmt.Sprintf("jsonpath={.data.%s}", field))
+	users, err := seedUsers(ctx, pool, *seedUsersCount, seedVal)
 	if err != nil {
-		return "", fmt.Errorf("kubectl get secret failed: %w", err)
+		log.Fatalf("ERROR: seedUsers failed: %v", err)
 	}
-	if out == "" {
-		return "", fmt.Errorf("secret %s field %s empty", secret, field)
+	log.Printf("OK: seeded %d users", len(users))
+
+	if err := seedSubscriptions(ctx, pool, users, seedVal); err != nil {
+		log.Fatalf("ERROR: seedSubscriptions failed: %v", err)
 	}
-	decoded, derr := base64.StdEncoding.DecodeString(out)
-	if derr != nil {
-		return "", fmt.Errorf("failed to decode secret field %s: %w", field, derr)
+	log.Printf("OK: seeded subscriptions")
+
+	if err := seedPayments(ctx, pool, users, *seedPaymentsCount, seedVal); err != nil {
+		log.Fatalf("ERROR: seedPayments failed: %v", err)
 	}
-	return string(decoded), nil
-}
+	log.Printf("OK: seeded %d payments", *seedPaymentsCount)
 
-func svcDNSName(svc, namespace string) string {
-	return fmt.Sprintf("%s.%s.svc.cluster.local", svc, namespace)
-}
-
-func svcResolvable(host string) bool {
-	_, err := net.LookupHost(host)
-	return err == nil
-}
-
-// waitForPort tests TCP connect on host:port until timeout.
-func waitForPort(host string, port int, timeout time.Duration) bool {
-	address := fmt.Sprintf("%s:%d", host, port)
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", address, 2*time.Second)
-		if err == nil {
-			_ = conn.Close()
-			return true
-		}
-		time.Sleep(300 * time.Millisecond)
+	log.Println("---- SAMPLE DATA (first 5 rows each) ----")
+	if err := printFirst5Users(ctx, pool); err != nil {
+		log.Printf("WARN: printFirst5Users: %v", err)
 	}
-	return false
-}
-
-// startPortForward starts kubectl port-forward and returns the process for cleanup.
-func startPortForward(ctx context.Context, namespace, svc string, localPort, remotePort int, logger *zap.SugaredLogger) (*exec.Cmd, error) {
-	args := []string{"port-forward", fmt.Sprintf("svc/%s", svc), fmt.Sprintf("%d:%d", localPort, remotePort), "-n", namespace}
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
-	// create new process group so we can kill whole group
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	// stream kubectl output to current process for easier debugging
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start port-forward: %w", err)
+	if err := printFirst5Subscriptions(ctx, pool); err != nil {
+		log.Printf("WARN: printFirst5Subscriptions: %v", err)
 	}
-	// wait until bind
-	if !waitForPort("127.0.0.1", localPort, 25*time.Second) {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-		return nil, fmt.Errorf("port-forward failed to bind localhost:%d", localPort)
+	if err := printFirst5Payments(ctx, pool); err != nil {
+		log.Printf("WARN: printFirst5Payments: %v", err)
 	}
-	logger.Infof("port-forward ready on localhost:%d (pid=%d)", localPort, cmd.Process.Pid)
-	return cmd, nil
+	log.Println("---- END SAMPLE DATA ----")
+
+	elapsed := time.Since(start)
+	log.Printf("COMPLETE: bootstrap finished in %s", elapsed.String())
 }
 
-// stopPortForward kills the kubectl port-forward process group.
-func stopPortForward(cmd *exec.Cmd, logger *zap.SugaredLogger) {
-	if cmd == nil || cmd.Process == nil {
-		return
-	}
-	pid := cmd.Process.Pid
-	logger.Infof("stopping port-forward (pid=%d)", pid)
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
-	_ = cmd.Process.Kill()
-	_, _ = cmd.Process.Wait()
-}
-
-// urlEscape escapes a few characters for libpq URL usage.
-func urlEscape(s string) string {
-	r := strings.NewReplacer(" ", "%20", "@", "%40", ":", "%3A", "/", "%2F")
-	return r.Replace(s)
-}
-
-// makeConnURL constructs a libpq-style postgresql URL with connect_timeout.
-func makeConnURL(user, password, host string, port int, db string, connectTimeoutSeconds int) string {
-	qt := fmt.Sprintf("connect_timeout=%d", connectTimeoutSeconds)
-	return fmt.Sprintf("postgresql://%s:%s@%s:%d/%s?%s&application_name=bootstrap_demo_users",
-		urlEscape(user), urlEscape(password), host, port, db, qt)
-}
-
-// tryConnect attempts to create a pgxpool and Ping until maxWait.
-func tryConnect(ctx context.Context, connURL string, maxWait time.Duration, logger *zap.SugaredLogger) (*pgxpool.Pool, error) {
-	deadline := time.Now().Add(maxWait)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		cfg, err := pgxpool.ParseConfig(connURL)
-		if err != nil {
-			return nil, fmt.Errorf("pgxpool parse config failed: %w", err)
-		}
-		// sane defaults
-		if cfg.MaxConns == 0 {
-			cfg.MaxConns = 8
-		}
-		pool, err := pgxpool.NewWithConfig(ctx, cfg)
-		if err == nil {
-			pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			err = pool.Ping(pingCtx)
-			cancel()
-			if err == nil {
-				logger.Infof("connected to database")
-				return pool, nil
-			}
-			// close pool before retrying
-			pool.Close()
-		}
-		lastErr = err
-		logger.Warnf("connect attempt failed: %v; retrying", err)
-		time.Sleep(1 * time.Second)
-	}
-	return nil, fmt.Errorf("unable to connect within %s: last error: %w", maxWait.String(), lastErr)
-}
-
-// ensureTables creates users, subscriptions, payments tables if they don't exist.
-func ensureTables(ctx context.Context, pool *pgxpool.Pool, logger *zap.SugaredLogger) error {
-	sql := `
-CREATE TABLE IF NOT EXISTS users (
-  user_id TEXT PRIMARY KEY,
-  email TEXT UNIQUE NOT NULL,
-  name TEXT NOT NULL,
-  account_status TEXT NOT NULL CHECK (account_status IN ('active','past_due','cancelled')),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-
-CREATE TABLE IF NOT EXISTS subscriptions (
-  subscription_id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-  plan TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('active','past_due','cancelled')),
-  renewal_date TIMESTAMPTZ,
-  billing_cycle_anchor TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id);
-
-CREATE TABLE IF NOT EXISTS payments (
-  payment_id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-  amount_cents INTEGER NOT NULL,
-  currency TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('succeeded','failed','refunded')),
-  created_at TIMESTAMPTZ NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_payments_user_created ON payments(user_id, created_at DESC);
-`
-	ctxExec, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	_, err := pool.Exec(ctxExec, sql)
+func applyMigrations(databaseURL, migrationsDir string) error {
+	db, err := sql.Open("postgres", databaseURL)
 	if err != nil {
-		return fmt.Errorf("ensureTables exec failed: %w", err)
+		return fmt.Errorf("sql.Open: %w", err)
 	}
-	logger.Info("ensured tables exist")
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		return fmt.Errorf("db.Ping: %w", err)
+	}
+
+	driver, err := postgres.WithInstance(db, &postgres.Config{})
+	if err != nil {
+		return fmt.Errorf("postgres.WithInstance: %w", err)
+	}
+
+	m, err := migrate.NewWithDatabaseInstance(migrationsDir, "postgres", driver)
+	if err != nil {
+		return fmt.Errorf("migrate.NewWithDatabaseInstance: %w", err)
+	}
+
+	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+		return fmt.Errorf("m.Up: %w", err)
+	}
 	return nil
 }
 
-// newULIDDet generates a deterministic ULID string using a fixed base time and seed+index entropy.
-func newULIDDet(seedVal int64, idx int) (string, error) {
-	// choose a stable base time for deterministic ordering
-	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	// offset ms per index to avoid collisions at same ms
-	msTime := base.Add(time.Duration(idx) * time.Millisecond)
-	ts := ulid.Timestamp(msTime)
-
-	// math/rand.Rand used as entropy source; it implements Read
-	src := mrand.New(mrand.NewSource(seedVal + int64(idx)))
-	id, err := ulid.New(ts, src)
+func openPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
-		return "", err
+		return nil, fmt.Errorf("pgxpool.ParseConfig: %w", err)
 	}
-	return id.String(), nil
+	if cfg.MaxConns == 0 {
+		cfg.MaxConns = 4
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("pgxpool.NewWithConfig: %w", err)
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := pool.Ping(pingCtx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("pgx pool Ping: %w", err)
+	}
+	return pool, nil
 }
 
-// seedUsers inserts deterministic users using gofakeit seeded with seedVal.
-func seedUsers(ctx context.Context, pool *pgxpool.Pool, n int, seedVal int64, logger *zap.SugaredLogger) ([]struct {
+func newULIDDet(seedVal int64, idx int) (ulid.ULID, error) {
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	msTime := base.Add(time.Duration(idx) * time.Millisecond)
+	ts := ulid.Timestamp(msTime)
+	src := rand.New(rand.NewSource(seedVal + int64(idx)))
+	id, err := ulid.New(ts, src)
+	if err != nil {
+		return ulid.ULID{}, err
+	}
+	return id, nil
+}
+
+func ulidToUUIDString(u ulid.ULID) string {
+	b := u[:]
+	hexS := hex.EncodeToString(b)
+	return fmt.Sprintf("%s-%s-%s-%s-%s", hexS[0:8], hexS[8:12], hexS[12:16], hexS[16:20], hexS[20:32])
+}
+
+func columnIsUUID(ctx context.Context, pool *pgxpool.Pool, table, column string) (bool, error) {
+	var dataType sql.NullString
+	q := `SELECT data_type FROM information_schema.columns WHERE table_name = $1 AND column_name = $2`
+	row := pool.QueryRow(ctx, q, table, column)
+	if err := row.Scan(&dataType); err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	return strings.EqualFold(dataType.String, "uuid"), nil
+}
+
+func seedUsers(ctx context.Context, pool *pgxpool.Pool, n int, seedVal int64) ([]struct {
 	UserID string
 	Email  string
 }, error) {
 	if n <= 0 {
-		return nil, errors.New("n must be > 0")
+		return nil, fmt.Errorf("n must be > 0")
 	}
-	// gofakeit.Seed accepts variadic args; passing seedVal yields deterministic output.
-	// When seedVal == 0, gofakeit will use crypto/rand internally.
 	gofakeit.Seed(uint64(seedVal))
 
-	txCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-	tx, err := pool.Begin(txCtx)
+	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("begin tx failed: %w", err)
+		return nil, fmt.Errorf("begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -267,21 +199,31 @@ func seedUsers(ctx context.Context, pool *pgxpool.Pool, n int, seedVal int64, lo
 		Email  string
 	}, 0, n)
 
+	needsUUID, err := columnIsUUID(ctx, pool, "users", "user_id")
+	if err != nil {
+		return nil, fmt.Errorf("detect users.user_id type: %w", err)
+	}
+
 	for i := 0; i < n; i++ {
-		uid, err := newULIDDet(seedVal, i+1)
+		u, err := newULIDDet(seedVal, i+1)
 		if err != nil {
-			logger.Errorf("ulid generation failed: %v", err)
-			return nil, fmt.Errorf("ulid generation: %w", err)
+			return nil, fmt.Errorf("ulid: %w", err)
 		}
+		var uidForInsert string
+		if needsUUID {
+			uidForInsert = ulidToUUIDString(u)
+		} else {
+			uidForInsert = u.String()
+		}
+
 		name := gofakeit.Name()
-		username := gofakeit.Username()
-		// sanitize username to be email-local friendly
-		username = strings.ToLower(strings.Map(func(r rune) rune {
+		username := strings.ToLower(gofakeit.Username())
+		username = strings.Map(func(r rune) rune {
 			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
 				return r
 			}
 			return -1
-		}, username))
+		}, username)
 		email := fmt.Sprintf("%s%d@demo.local", username, i+1)
 		status := "active"
 		if i%17 == 0 {
@@ -290,51 +232,62 @@ func seedUsers(ctx context.Context, pool *pgxpool.Pool, n int, seedVal int64, lo
 			status = "cancelled"
 		}
 		createdAt := time.Now().UTC().AddDate(0, 0, -((i*7)%365))
-		if _, err := tx.Exec(txCtx, insertSQL, uid, email, name, status, createdAt); err != nil {
-			logger.Errorf("insert user failed email=%s err=%v", email, err)
+		if _, err := tx.Exec(ctx, insertSQL, uidForInsert, email, name, status, createdAt); err != nil {
+			log.Printf("WARN: insert user failed email=%s err=%v", email, err)
 			continue
 		}
 		out = append(out, struct {
 			UserID string
 			Email  string
-		}{UserID: uid, Email: email})
+		}{UserID: uidForInsert, Email: email})
 	}
 
-	if err := tx.Commit(txCtx); err != nil {
-		return nil, fmt.Errorf("commit users tx failed: %w", err)
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit users tx: %w", err)
 	}
-	logger.Infof("seeded %d users", len(out))
 	return out, nil
 }
 
-// seedSubscriptions creates subscriptions for a subset of users deterministically.
-func seedSubscriptions(ctx context.Context, pool *pgxpool.Pool, users []struct{ UserID, Email string }, seedVal int64, logger *zap.SugaredLogger) error {
+func seedSubscriptions(ctx context.Context, pool *pgxpool.Pool, users []struct {
+	UserID string
+	Email  string
+}, seedVal int64) error {
 	if len(users) == 0 {
-		return errors.New("no users available")
+		return nil
 	}
 	gofakeit.Seed(uint64(seedVal + 1))
 
-	txCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-	tx, err := pool.Begin(txCtx)
+	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin subscriptions tx failed: %w", err)
+		return fmt.Errorf("begin subs tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	insertSQL := `INSERT INTO subscriptions (subscription_id, user_id, plan, status, renewal_date, billing_cycle_anchor, created_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (subscription_id) DO NOTHING;`
-
+	insertSQL := `INSERT INTO subscriptions (subscription_id, user_id, plan, status, renewal_date, billing_cycle_anchor, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (subscription_id) DO NOTHING;`
 	plans := []string{"free", "pro", "enterprise"}
 
+	needsUUIDUsers, err := columnIsUUID(ctx, pool, "users", "user_id")
+	if err != nil {
+		return fmt.Errorf("detect users.user_id type: %w", err)
+	}
+	needsUUIDSubs, err := columnIsUUID(ctx, pool, "subscriptions", "subscription_id")
+	if err != nil {
+		return fmt.Errorf("detect subscriptions.subscription_id type: %w", err)
+	}
+
 	for i, u := range users {
-		// skip some users (edge case without subscription)
 		if i%10 == 9 {
 			continue
 		}
-		sid, err := newULIDDet(seedVal+7, i+1)
+		sidULID, err := newULIDDet(seedVal+7, i+1)
 		if err != nil {
-			return err
+			return fmt.Errorf("ulid subs: %w", err)
+		}
+		var sidForInsert string
+		if needsUUIDSubs {
+			sidForInsert = ulidToUUIDString(sidULID)
+		} else {
+			sidForInsert = sidULID.String()
 		}
 		plan := plans[i%len(plans)]
 		status := "active"
@@ -344,45 +297,76 @@ VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (subscription_id) DO NOTHING;`
 		renewal := time.Now().UTC().AddDate(0, (i%3)+1, 0)
 		billingAnchor := time.Now().UTC().AddDate(0, -((i%12)+1), 0)
 		created := time.Now().UTC().AddDate(0, 0, -((i*3)%365))
-		if _, err := tx.Exec(txCtx, insertSQL, sid, u.UserID, plan, status, renewal, billingAnchor, created); err != nil {
-			logger.Errorf("insert subscription failed user=%s err=%v", u.Email, err)
+
+		userIDForInsert := u.UserID
+		if needsUUIDUsers && len(userIDForInsert) == 26 { // ULID string stored earlier as string; convert if necessary
+			parsed, err := ulid.Parse(userIDForInsert)
+			if err == nil {
+				userIDForInsert = ulidToUUIDString(parsed)
+			}
+		}
+
+		if _, err := tx.Exec(ctx, insertSQL, sidForInsert, userIDForInsert, plan, status, renewal, billingAnchor, created); err != nil {
+			log.Printf("WARN: insert subscription failed user=%s err=%v", u.Email, err)
 			continue
 		}
 	}
 
-	if err := tx.Commit(txCtx); err != nil {
-		return fmt.Errorf("commit subscriptions tx failed: %w", err)
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit subs tx: %w", err)
 	}
-	logger.Info("seeded subscriptions")
 	return nil
 }
 
-// seedPayments creates deterministic payments for users, including duplicates and various statuses.
-func seedPayments(ctx context.Context, pool *pgxpool.Pool, users []struct{ UserID, Email string }, total int, seedVal int64, logger *zap.SugaredLogger) error {
-	if len(users) == 0 {
-		return errors.New("no users to seed payments")
+func seedPayments(ctx context.Context, pool *pgxpool.Pool, users []struct {
+	UserID string
+	Email  string
+}, total int, seedVal int64) error {
+	if len(users) == 0 || total <= 0 {
+		return nil
 	}
 	gofakeit.Seed(uint64(seedVal + 2))
 
-	txCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-	defer cancel()
-	tx, err := pool.Begin(txCtx)
+	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin payments tx failed: %w", err)
+		return fmt.Errorf("begin payments tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	insertSQL := `INSERT INTO payments (payment_id, user_id, amount_cents, currency, status, created_at)
-VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING;`
+	insertSQL := `INSERT INTO payments (payment_id, user_id, amount_cents, currency, status, created_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING;`
+
+	needsUUIDPayments, err := columnIsUUID(ctx, pool, "payments", "payment_id")
+	if err != nil {
+		return fmt.Errorf("detect payments.payment_id type: %w", err)
+	}
+	needsUUIDUsers, err := columnIsUUID(ctx, pool, "users", "user_id")
+	if err != nil {
+		return fmt.Errorf("detect users.user_id type: %w", err)
+	}
 
 	for i := 0; i < total; i++ {
-		// deterministic mapping to a user
 		userIdx := (i*7 + int(seedVal)) % len(users)
 		user := users[userIdx]
-		pid, err := newULIDDet(seedVal+100, i+1)
+
+		pidULID, err := newULIDDet(seedVal+100, i+1)
 		if err != nil {
-			return err
+			return fmt.Errorf("ulid payments: %w", err)
 		}
+		var pidForInsert string
+		if needsUUIDPayments {
+			pidForInsert = ulidToUUIDString(pidULID)
+		} else {
+			pidForInsert = pidULID.String()
+		}
+
+		userIDForInsert := user.UserID
+		if needsUUIDUsers && len(userIDForInsert) == 26 {
+			parsed, err := ulid.Parse(userIDForInsert)
+			if err == nil {
+				userIDForInsert = ulidToUUIDString(parsed)
+			}
+		}
+
 		amount := int(gofakeit.Float64Range(5.00, 500.00) * 100)
 		var status string
 		switch {
@@ -394,166 +378,120 @@ VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING;`
 			status = "succeeded"
 		}
 		created := time.Now().UTC().AddDate(0, 0, -((i*2)%365))
-		if _, err := tx.Exec(txCtx, insertSQL, pid, user.UserID, amount, "USD", status, created); err != nil {
-			logger.Errorf("insert payment failed user=%s err=%v", user.Email, err)
+		if _, err := tx.Exec(ctx, insertSQL, pidForInsert, userIDForInsert, amount, "USD", status, created); err != nil {
+			log.Printf("WARN: insert payment failed user=%s err=%v", user.Email, err)
 			continue
 		}
-		// add a deliberate duplicate payment for certain iterations
+
 		if i%37 == 0 {
-			dupPid, derr := newULIDDet(seedVal+200, i+1)
+			dupULID, derr := newULIDDet(seedVal+200, i+1)
 			if derr == nil {
-				if _, err := tx.Exec(txCtx, insertSQL, dupPid, user.UserID, amount, "USD", "succeeded", created.Add(10*time.Second)); err != nil {
-					logger.Warnf("insert duplicate payment failed: %v", err)
+				var dupPid string
+				if needsUUIDPayments {
+					dupPid = ulidToUUIDString(dupULID)
+				} else {
+					dupPid = dupULID.String()
+				}
+				if _, err := tx.Exec(ctx, insertSQL, dupPid, userIDForInsert, amount, "USD", "succeeded", created.Add(10*time.Second)); err != nil {
+					log.Printf("WARN: insert duplicate payment failed: %v", err)
 				}
 			}
 		}
 	}
 
-	if err := tx.Commit(txCtx); err != nil {
-		return fmt.Errorf("commit payments tx failed: %w", err)
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit payments tx: %w", err)
 	}
-	logger.Infof("seeded %d payments", total)
 	return nil
 }
 
-// kubectlPsqlDiagnostic executes a diagnostic SQL via kubectl exec into the postgres pod.
-func kubectlPsqlDiagnostic(ctx context.Context, namespace string, logger *zap.SugaredLogger) error {
-	out, err := runCmd(ctx, "kubectl", "get", "pod", "-n", namespace, "-l", "cnpg.io/cluster=postgres-cluster", "-o", "jsonpath={.items[0].metadata.name}")
+func printFirst5Users(ctx context.Context, pool *pgxpool.Pool) error {
+	rows, err := pool.Query(ctx, `SELECT user_id, email, account_status, created_at FROM users ORDER BY created_at DESC LIMIT 5`)
 	if err != nil {
-		return fmt.Errorf("find postgres pod failed: %w", err)
+		return fmt.Errorf("query users: %w", err)
 	}
-	pod := strings.TrimSpace(out)
-	if pod == "" {
-		return errors.New("postgres pod not found")
-	}
-	sql := `
-SELECT 'users' AS table, count(*) AS rows FROM users
-UNION ALL
-SELECT 'subscriptions', count(*) FROM subscriptions
-UNION ALL
-SELECT 'payments', count(*) FROM payments;
+	defer rows.Close()
 
-SELECT user_id, email, account_status FROM users LIMIT 5;
-
-SELECT subscription_id, user_id, plan, status FROM subscriptions LIMIT 5;
-
-SELECT payment_id, user_id, amount_cents, status FROM payments LIMIT 5;
-`
-	output, err := runCmd(ctx, "kubectl", "exec", "-n", namespace, pod, "--", "psql", "-U", "postgres", "-d", targetDB, "-c", sql)
-	if err != nil {
-		logger.Warnf("kubectl psql diagnostic failed: %v", err)
-		if output != "" {
-			fmt.Println(output)
+	log.Println("USERS (first 5):")
+	var any bool
+	for rows.Next() {
+		var id, email, status string
+		var created time.Time
+		if err := rows.Scan(&id, &email, &status, &created); err != nil {
+			return fmt.Errorf("scan users: %w", err)
 		}
-		return err
+		fmt.Printf("  - %s | %s | %s | %s\n", id, email, status, created.UTC().Format(time.RFC3339))
+		any = true
 	}
-	fmt.Println(output)
-	logger.Info("kubectl psql diagnostic executed")
-	return nil
+	if !any {
+		fmt.Println("  (no users found)")
+	}
+	return rows.Err()
 }
 
-func main() {
-	// configure zap logger (production config)
-	logger, err := zap.NewProduction()
+func printFirst5Subscriptions(ctx context.Context, pool *pgxpool.Pool) error {
+	rows, err := pool.Query(ctx, `SELECT subscription_id, user_id, plan, status, renewal_date FROM subscriptions ORDER BY created_at DESC LIMIT 5`)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to init zap logger: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("query subscriptions: %w", err)
 	}
-	defer func() { _ = logger.Sync() }()
-	sugar := logger.Sugar()
+	defer rows.Close()
 
-	// context with signal handling
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
-	sugar.Info("bootstrap-demo-users starting")
-
-	// read seed from env for deterministic runs
-	seedVal := int64(2026)
-	if env := os.Getenv("SEED"); env != "" {
-		if parsed, perr := strconv.ParseInt(env, 10, 64); perr == nil {
-			seedVal = parsed
-		} else {
-			sugar.Warnf("invalid SEED value %q, using default %d", env, seedVal)
+	log.Println("SUBSCRIPTIONS (first 5):")
+	var any bool
+	for rows.Next() {
+		var sid, uid, plan, status string
+		var renewal sql.NullTime
+		if err := rows.Scan(&sid, &uid, &plan, &status, &renewal); err != nil {
+			return fmt.Errorf("scan subs: %w", err)
 		}
+		renewalStr := "(nil)"
+		if renewal.Valid {
+			renewalStr = renewal.Time.UTC().Format(time.RFC3339)
+		}
+		fmt.Printf("  - %s | user=%s | %s | %s | renewal=%s\n", sid, uid, plan, status, renewalStr)
+		any = true
 	}
+	if !any {
+		fmt.Println("  (no subscriptions found)")
+	}
+	return rows.Err()
+}
 
-	// read K8s secret fields for DB credentials
-	user, err := k8sSecretField(ctx, k8sSecretName, k8sNamespace, "username")
+func printFirst5Payments(ctx context.Context, pool *pgxpool.Pool) error {
+	rows, err := pool.Query(ctx, `SELECT payment_id, user_id, amount_cents, status, created_at FROM payments ORDER BY created_at DESC LIMIT 5`)
 	if err != nil {
-		sugar.Fatalf("failed to read username secret: %v", err)
+		return fmt.Errorf("query payments: %w", err)
 	}
-	pass, err := k8sSecretField(ctx, k8sSecretName, k8sNamespace, "password")
-	if err != nil {
-		sugar.Fatalf("failed to read password secret: %v", err)
-	}
+	defer rows.Close()
 
-	host := svcDNSName(poolerService, k8sNamespace)
-	localPort := poolerPort
-	var pfCmd *exec.Cmd
-	if !svcResolvable(host) {
-		sugar.Infof("service DNS %s not resolvable; starting port-forward", host)
-		pfCmd, err = startPortForward(ctx, k8sNamespace, poolerService, localPort, poolerPort, sugar)
-		if err != nil {
-			sugar.Fatalf("port-forward failed: %v", err)
+	log.Println("PAYMENTS (first 5):")
+	var any bool
+	for rows.Next() {
+		var pid, uid, status string
+		var amount int
+		var created time.Time
+		if err := rows.Scan(&pid, &uid, &amount, &status, &created); err != nil {
+			return fmt.Errorf("scan payments: %w", err)
 		}
-		host = "127.0.0.1"
-	} else {
-		sugar.Infof("service DNS %s resolvable", host)
+		fmt.Printf("  - %s | user=%s | %d cents | %s | %s\n", pid, uid, amount, status, created.UTC().Format(time.RFC3339))
+		any = true
 	}
+	if !any {
+		fmt.Println("  (no payments found)")
+	}
+	return rows.Err()
+}
 
-	connURL := makeConnURL(user, pass, host, localPort, targetDB, connectTimeout)
-	sugar.Debugf("connecting using host=%s db=%s", host, targetDB)
-
-	pool, err := tryConnect(ctx, connURL, 60*time.Second, sugar)
-	if err != nil {
-		if pfCmd != nil {
-			stopPortForward(pfCmd, sugar)
+func maskDatabaseURL(raw string) string {
+	if idx := strings.Index(raw, "://"); idx != -1 {
+		rest := raw[idx+3:]
+		if at := strings.Index(rest, "@"); at != -1 {
+			creds := rest[:at]
+			if colon := strings.Index(creds, ":"); colon != -1 {
+				user := creds[:colon]
+				return raw[:idx+3] + user + ":***@" + rest[at+1:]
+			}
 		}
-		sugar.Fatalf("database not reachable: %v", err)
 	}
-	// ensure pool is closed on exit
-	defer pool.Close()
-
-	if err := ensureTables(ctx, pool, sugar); err != nil {
-		if pfCmd != nil {
-			stopPortForward(pfCmd, sugar)
-		}
-		sugar.Fatalf("failed to ensure tables: %v", err)
-	}
-
-	// deterministic seeding counts
-	users, err := seedUsers(ctx, pool, 7, seedVal, sugar)
-	if err != nil {
-		if pfCmd != nil {
-			stopPortForward(pfCmd, sugar)
-		}
-		sugar.Fatalf("seed users failed: %v", err)
-	}
-
-	if err := seedSubscriptions(ctx, pool, users, seedVal, sugar); err != nil {
-		if pfCmd != nil {
-			stopPortForward(pfCmd, sugar)
-		}
-		sugar.Fatalf("seed subscriptions failed: %v", err)
-	}
-
-	if err := seedPayments(ctx, pool, users, 12, seedVal, sugar); err != nil {
-		if pfCmd != nil {
-			stopPortForward(pfCmd, sugar)
-		}
-		sugar.Fatalf("seed payments failed: %v", err)
-	}
-
-	sugar.Info("bootstrap complete (users/subscriptions/payments)")
-
-	// diagnostic: run kubectl psql (best-effort)
-	if err := kubectlPsqlDiagnostic(ctx, k8sNamespace, sugar); err != nil {
-		sugar.Warnf("kubectl diagnostic failed: %v", err)
-	}
-
-	if pfCmd != nil {
-		stopPortForward(pfCmd, sugar)
-	}
-	sugar.Info("bootstrap-demo-users finished")
+	return raw
 }

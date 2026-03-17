@@ -455,7 +455,7 @@ print_connection_uris_and_portforward(){
   cluster_host="${POOLER_NAME}.${TARGET_NS}.svc.cluster.local"
   raw_cluster="postgresql://${user}:${pw}@${cluster_host}:${port}/${INITDB_DB}?sslmode=disable"
 
-  printf "\nIN-CLUSTER DATABASE URL (raw):\n  %s\n\n" "${raw_cluster}"
+  printf "\nIN-CLUSTER DATABASE_URL (raw):\n  %s\n\n" "${raw_cluster}"
 
   # select local port
   local_port="$(choose_local_port || true)"
@@ -473,7 +473,7 @@ print_connection_uris_and_portforward(){
   # wait for local port to be open
   if wait_for_local_port "${local_port}" 20; then
     local_raw="postgresql://${user}:${pw}@localhost:${local_port}/${INITDB_DB}?sslmode=disable"
-    printf "LOCAL-PORTFORWARD DATABASE URL (raw):\n  %s\n\n" "${local_raw}"
+    printf "LOCAL-PORTFORWARD DATABASE_URL (raw):\n  %s\n\n" "${local_raw}"
     printf "Port-forward PID: %s (logs: %s). Stop with: kill %s\n\n" "${pid}" "${pf_log}" "${pid}"
   else
     log "port-forward did not open within timeout; check logs: ${pf_log}"

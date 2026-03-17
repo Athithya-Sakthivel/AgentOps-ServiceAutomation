@@ -1,14 +1,14 @@
-
 build:
 	mkdir -p bin && \
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-	go build -trimpath -buildvcs=false -ldflags="-s -w -buildid=" -o bin/seed_billing_scenarios ./cmd/seed_billing_scenarios
+	export CGO_ENABLED=0; \
+	export GOOS=linux; \
+	export GOARCH=amd64; \
+	go build -trimpath -buildvcs=false -ldflags="-s -w -buildid=" -o bin/seed_billing_scenarios ./cmd/seed_billing_scenarios && \
+	go build -trimpath -buildvcs=false -ldflags="-s -w -buildid=" -o bin/mcp-service ./cmd/mcp-service
+	
+run:
+	./bin/seed_billing_scenarios
 
-
-recreate:
-	make lc && make rollout-default-sc && make rollout-pg && make rollout-kuberay-operator && \
-	make test-pg && \
-	make rollout-signoz 
 
 rollout-signoz:
 	bash src/core/signoz.sh --rollout && bash src/tests/signoz.sh
