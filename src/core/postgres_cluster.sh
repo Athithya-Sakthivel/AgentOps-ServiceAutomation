@@ -5,9 +5,10 @@
 # Performs server-side schema validation before applying manifests, waits for cluster readiness, then deploys the pooler and exposes connection URIs derived from the CNPG secret.
 # Executes automated end-to-end PostgreSQL CRUD tests through the pooler using ephemeral test pods to verify storage, networking, authentication, and query functionality.
 
-set -euo pipefail
 
-K8S_CLUSTER="${K8S_CLUSTER:-kind}" # or eks|gke|aks
+#!/usr/bin/env bash
+set -euo pipefail
+K8S_CLUSTER="${K8S_CLUSTER:-kind}"         # kind|eks|gke|aks
 TARGET_NS="${TARGET_NS:-default}"
 ARCHIVE_DIR="src/scripts/archive"
 MANIFEST_DIR="src/manifests/postgres"
@@ -26,8 +27,8 @@ POD_TIMEOUT="${POD_TIMEOUT:-900}"
 SECRET_TIMEOUT="${SECRET_TIMEOUT:-180}"
 
 STORAGE_CLASS_NAME="${STORAGE_CLASS_NAME:-default-storage-class}"
-INITDB_DB="${INITDB_DB:-agents}"
-ADDITIONAL_DBS=(demo_users)
+INITDB_DB="${INITDB_DB:-agentops}"   # single DB required for this workflow
+ADDITIONAL_DBS=()                   # intentionally empty
 
 if [[ "${K8S_CLUSTER}" == "kind" ]]; then
   INSTANCES=2
@@ -193,8 +194,8 @@ ensure_storage_class(){
   case "${K8S_CLUSTER}" in
     kind) install_local_path_provisioner; create_storageclass_kind ;;
     eks) create_storageclass_eks ;;
-    gke) fatal "GKE automatic storageclass creation not implemented";;
-    aks) fatal "AKS automatic storageclass creation not implemented";;
+    gke) fatal "GKE automatic storageclass creation not implemented" ;;
+    aks) fatal "AKS automatic storageclass creation not implemented" ;;
     *) create_storageclass_kind ;;
   esac
   log "storageclass ensured: ${STORAGE_CLASS_NAME}"
@@ -248,8 +249,6 @@ spec:
     initdb:
       database: ${INITDB_DB}
       owner: app
-      postInitSQL:
-$(for db in "${ADDITIONAL_DBS[@]}"; do printf "        - CREATE DATABASE %s OWNER app;\n" "${db}"; done)
       postInitApplicationSQL:
         - ALTER SCHEMA public OWNER TO app;
   storage:
@@ -312,32 +311,12 @@ EOF
   log "wrote ${POOLER_FILE}"
 }
 
-manifest_hash(){
-  local file="$1"
-  sha256sum "$file" | awk '{print $1}'
-}
-
-get_annotation(){
-  local kind="$1"
-  local name="$2"
-  local key="$3"
-  kubectl -n "${TARGET_NS}" get "${kind}" "${name}" -o "jsonpath={.metadata.annotations['${key}']}" 2>/dev/null || true
-}
-
-set_annotation(){
-  local kind="$1"
-  local name="$2"
-  local key="$3"
-  local value="$4"
-  kubectl -n "${TARGET_NS}" patch "${kind}" "${name}" --type=merge -p "{\"metadata\":{\"annotations\":{\"${key}\":\"${value}\"}}}" >/dev/null 2>&1 || true
-}
+manifest_hash(){ local file="$1"; sha256sum "$file" | awk '{print $1}'; }
+get_annotation(){ local kind="$1"; local name="$2"; local key="$3"; kubectl -n "${TARGET_NS}" get "${kind}" "${name}" -o "jsonpath={.metadata.annotations['${key}']}" 2>/dev/null || true; }
+set_annotation(){ local kind="$1"; local name="$2"; local key="$3"; local value="$4"; kubectl -n "${TARGET_NS}" patch "${kind}" "${name}" --type=merge -p "{\"metadata\":{\"annotations\":{\"${key}\":\"${value}\"}}}" >/dev/null 2>&1 || true; }
 
 apply_manifest_if_changed(){
-  local file="$1"
-  local kind="$2"
-  local name="$3"
-  local ann_key="$4"
-  local h
+  local file="$1"; local kind="$2"; local name="$3"; local ann_key="$4"; local h
   h=$(manifest_hash "${file}")
   local existing
   existing=$(get_annotation "${kind}" "${name}" "${ann_key}")
@@ -375,7 +354,7 @@ wait_for_app_secret(){
   local start now elapsed secret
   start=$(date +%s)
   while true; do
-    now=$(date +%s); elapsed=$((now - start))
+    now=$(date +%s); elapsed=$((now-start))
     secret="$(kubectl -n "${TARGET_NS}" get secret -l "cnpg.io/cluster=${CLUSTER_NAME},cnpg.io/userType=app" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
     if [[ -n "${secret}" ]]; then log "found app secret ${secret}"; printf '%s' "${secret}"; return 0; fi
     if [[ "${elapsed}" -ge "${SECRET_TIMEOUT}" ]]; then fatal "timeout waiting for app secret"; fi
@@ -383,45 +362,39 @@ wait_for_app_secret(){
   done
 }
 
-get_primary_pod(){
-  kubectl -n "${TARGET_NS}" get pods -l 'cnpg.io/instanceRole=primary' -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true
-}
+get_primary_pod(){ kubectl -n "${TARGET_NS}" get pods -l 'cnpg.io/instanceRole=primary' -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true; }
 
 ensure_database_exists(){
   local primary db exists
   primary="$(get_primary_pod)"
   if [[ -z "${primary}" ]]; then fatal "primary pod not found to run DB creation"; fi
-  for db in "$@"; do
-    exists=$(kubectl -n "${TARGET_NS}" exec "${primary}" -- psql -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='${db}';" 2>/dev/null || echo "")
-    if [[ "${exists}" =~ 1 ]]; then
-      log "database ${db} already exists"
-    else
-      log "creating database ${db}"
-      kubectl -n "${TARGET_NS}" exec "${primary}" -- psql -U postgres -c "CREATE DATABASE ${db} OWNER app;" >/dev/null 2>&1 || fatal "failed to create database ${db}"
-      log "created ${db}"
-    fi
-  done
+  db="${INITDB_DB}"
+  exists=$(kubectl -n "${TARGET_NS}" exec "${primary}" -- psql -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='${db}';" 2>/dev/null || echo "")
+  if [[ "${exists}" =~ 1 ]]; then
+    log "database ${db} already exists"
+  else
+    log "creating database ${db}"
+    kubectl -n "${TARGET_NS}" exec "${primary}" -- psql -U postgres -c "CREATE DATABASE ${db} OWNER app;" >/dev/null 2>&1 || fatal "failed to create database ${db}"
+    log "created ${db}"
+  fi
 }
 
 fix_database_schema_ownership(){
-  log "ensuring schema ownership for target DBs"
-  local db primary
+  log "ensuring schema ownership for target DB ${INITDB_DB}"
+  local primary
   primary="$(get_primary_pod)"
   if [[ -z "${primary}" ]]; then fatal "primary pod not found to run ownership fix"; fi
-  for db in "${ADDITIONAL_DBS[@]}"; do
-    kubectl -n "${TARGET_NS}" exec "${primary}" -- psql -U postgres -d "${db}" -c "ALTER SCHEMA public OWNER TO app;" >/dev/null 2>&1 || true
-  done
-  log "schema ownership attempts complete"
+  kubectl -n "${TARGET_NS}" exec "${primary}" -- psql -U postgres -d "${INITDB_DB}" -c "ALTER SCHEMA public OWNER TO app;" >/dev/null 2>&1 || true
+  log "schema ownership attempt complete"
 }
 
 deploy_pooler_and_wait(){
   apply_manifest_if_changed "${POOLER_FILE}" pooler "${POOLER_NAME}" "${ANNOTATION_POOLER_KEY}"
   log "waiting for pooler pods to be ready"
-  local start now elapsed
+  local start now elapsed pods ready need svc
   start=$(date +%s)
   while true; do
     now=$(date +%s); elapsed=$((now - start))
-    local pods ready need svc
     pods=$(kubectl -n "${TARGET_NS}" get pods -l "cnpg.io/poolerName=${POOLER_NAME}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
     if [[ -n "${pods}" ]]; then
       ready=$(for p in ${pods}; do kubectl -n "${TARGET_NS}" get pod "$p" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null || echo false; done | grep -c true || true)
@@ -436,37 +409,137 @@ deploy_pooler_and_wait(){
   done
 }
 
-mask_uri(){ echo "$1" | sed -E 's#(:)[^:@]+(@)#:\*\*\*\*\*@#'; }
+# choose a free local port (try 5432 first, then 15432..15440)
+choose_local_port(){
+  local candidate
+  for candidate in 5432 15432 15433 15434 15435 15436 15437 15438 15439 15440; do
+    # attempt TCP connect to detect if something is listening
+    if (echo > /dev/tcp/127.0.0.1/"${candidate}") >/dev/null 2>&1; then
+      # connect succeeded -> port in use
+      continue
+    else
+      echo "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
 
-print_connection_uris(){
-  log "printing masked pooler URIs"
-  local secret user pw port host raw masked
-  secret="$(kubectl -n "${TARGET_NS}" get secret -l "cnpg.io/cluster=${CLUSTER_NAME},cnpg.io/userType=app" -o jsonpath='{.items[0].metadata.name}')"
+# wait until localhost:port accepts TCP connection (timeout seconds)
+wait_for_local_port(){
+  local port="$1"; local timeout="${2:-15}"
+  local start now
+  start=$(date +%s)
+  while true; do
+    if (echo > /dev/tcp/127.0.0.1/"${port}") >/dev/null 2>&1; then
+      return 0
+    fi
+    now=$(date +%s)
+    if (( now - start >= timeout )); then
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+# derive DB URLs and start port-forward; prints raw URLs (no masking)
+print_connection_uris_and_portforward(){
+  log "deriving connection URIs"
+  local secret user pw port cluster_host raw_cluster local_port pid local_raw
+  secret="$(kubectl -n "${TARGET_NS}" get secret -l "cnpg.io/cluster=${CLUSTER_NAME},cnpg.io/userType=app" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  if [[ -z "${secret}" ]]; then fatal "app secret not found; pooler/cluster not ready?"; fi
   user="$(kubectl -n "${TARGET_NS}" get secret "${secret}" -o jsonpath='{.data.username}' 2>/dev/null | base64 -d)"
   pw="$(kubectl -n "${TARGET_NS}" get secret "${secret}" -o jsonpath='{.data.password}' 2>/dev/null | base64 -d)"
   port="$(kubectl -n "${TARGET_NS}" get secret "${secret}" -o jsonpath='{.data.port}' 2>/dev/null | base64 -d || echo 5432)"
-  host="${POOLER_NAME}.${TARGET_NS}"
-  raw="postgresql://${user}:${pw}@${host}:${port}"
-  masked=$(mask_uri "${raw}")
-  printf "\nConnection URIs (masked):\n\n"
-  printf "%s/%s\n" "${masked}" "${INITDB_DB}"
-  for db in "${ADDITIONAL_DBS[@]}"; do
-    printf "%s/%s\n" "${masked}" "${db}"
-  done
+
+  cluster_host="${POOLER_NAME}.${TARGET_NS}.svc.cluster.local"
+  raw_cluster="postgresql://${user}:${pw}@${cluster_host}:${port}/${INITDB_DB}?sslmode=disable"
+
+  printf "\nIN-CLUSTER DATABASE URL (raw):\n  %s\n\n" "${raw_cluster}"
+
+  # select local port
+  local_port="$(choose_local_port || true)"
+  if [[ -z "${local_port}" ]]; then
+    log "no free local port found for port-forward; skipping local DATABASE_URL"
+    return 0
+  fi
+
+  # start port-forward in background and redirect output to file
+  local pf_log="/tmp/cnpg-portforward-${POOLER_NAME}.log"
+  log "starting kubectl port-forward svc/${POOLER_NAME} -n ${TARGET_NS} ${local_port}:5432 (background); logs -> ${pf_log}"
+  kubectl -n "${TARGET_NS}" port-forward "svc/${POOLER_NAME}" "${local_port}:5432" >"${pf_log}" 2>&1 &
+  pid=$!
+
+  # wait for local port to be open
+  if wait_for_local_port "${local_port}" 20; then
+    local_raw="postgresql://${user}:${pw}@localhost:${local_port}/${INITDB_DB}?sslmode=disable"
+    printf "LOCAL-PORTFORWARD DATABASE URL (raw):\n  %s\n\n" "${local_raw}"
+    printf "Port-forward PID: %s (logs: %s). Stop with: kill %s\n\n" "${pid}" "${pf_log}" "${pid}"
+  else
+    log "port-forward did not open within timeout; check logs: ${pf_log}"
+    # if kubectl port-forward already exited, show last 200 lines
+    if ! ps -p "${pid}" >/dev/null 2>&1; then
+      log "kubectl port-forward process exited; last logs:"
+      tail -n 200 "${pf_log}" || true
+    fi
+    log "port-forward may have failed; run manually: kubectl -n ${TARGET_NS} port-forward svc/${POOLER_NAME} ${local_port}:5432"
+  fi
 }
 
 persist_artifacts(){
   mkdir -p "${MANIFEST_DIR}" "${ARCHIVE_DIR}"
   cp "${CLUSTER_FILE}" "${MANIFEST_DIR}/postgres_cluster.yaml" 2>/dev/null || true
   cp "${POOLER_FILE}" "${MANIFEST_DIR}/postgres_pooler.yaml" 2>/dev/null || true
-  print_connection_uris > "${MANIFEST_DIR}/masked_pooler_uris.txt" || true
-  log "artifacts persisted to ${MANIFEST_DIR}"
+  log "manifests persisted to ${MANIFEST_DIR}"
 }
 
 delete_all(){
-  kubectl -n "${TARGET_NS}" delete deployment,cluster,pooler "${CLUSTER_NAME}" --ignore-not-found >/dev/null 2>&1 || true
+  kubectl -n "${TARGET_NS}" delete cluster "${CLUSTER_NAME}" --ignore-not-found >/dev/null 2>&1 || true
+  kubectl -n "${TARGET_NS}" delete pooler "${POOLER_NAME}" --ignore-not-found >/dev/null 2>&1 || true
   kubectl -n "${TARGET_NS}" delete svc "${POOLER_NAME}" --ignore-not-found >/dev/null 2>&1 || true
   log "deleted cnpg resources; preserved PV data"
+}
+
+run_crud_tests_via_pooler(){
+  log "running CRUD test against DB ${INITDB_DB} via pooler"
+  local secret user pw port host pod start phase
+  secret="$(kubectl -n "${TARGET_NS}" get secret -l "cnpg.io/cluster=${CLUSTER_NAME},cnpg.io/userType=app" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  if [[ -z "${secret}" ]]; then log "app secret missing; skipping CRUD test"; return 0; fi
+  user="$(kubectl -n "${TARGET_NS}" get secret "${secret}" -o jsonpath='{.data.username}' 2>/dev/null | base64 -d)"
+  pw="$(kubectl -n "${TARGET_NS}" get secret "${secret}" -o jsonpath='{.data.password}' 2>/dev/null | base64 -d)"
+  port="$(kubectl -n "${TARGET_NS}" get secret "${secret}" -o jsonpath='{.data.port}' 2>/dev/null | base64 -d || echo 5432)"
+  host="${POOLER_NAME}.${TARGET_NS}"
+  pod="e2e-pgtest-${INITDB_DB//_/-}"
+  kubectl -n "${TARGET_NS}" delete pod "${pod}" --ignore-not-found >/dev/null 2>&1 || true
+  kubectl run "${pod}" -n "${TARGET_NS}" --restart=Never --image=postgres:16 --env="PGUSER=${user}" --env="PGPASSWORD=${pw}" --env="PGHOST=${host}" --env="PGPORT=${port}" --env="PGDATABASE=${INITDB_DB}" --command -- sh -c "psql -h \"\$PGHOST\" -U \"\$PGUSER\" -p \"\$PGPORT\" -d \"\$PGDATABASE\" -v ON_ERROR_STOP=1 -c \"CREATE TABLE IF NOT EXISTS e2e_test (id SERIAL PRIMARY KEY, v TEXT); INSERT INTO e2e_test(v) VALUES ('insert_test');\" && psql -h \"\$PGHOST\" -U \"\$PGUSER\" -p \"\$PGPORT\" -d \"\$PGDATABASE\" -c \"SELECT 'READ_AFTER_INSERT', count(*) FROM e2e_test;\" && psql -h \"\$PGHOST\" -U \"\$PGUSER\" -p \"\$PGPORT\" -d \"\$PGDATABASE\" -c \"UPDATE e2e_test SET v='updated_test' WHERE v='insert_test';\" && psql -h \"\$PGHOST\" -U \"\$PGUSER\" -p \"\$PGPORT\" -d \"\$PGDATABASE\" -c \"DELETE FROM e2e_test;\""
+  start=$(date +%s)
+  while true; do
+    if kubectl -n "${TARGET_NS}" get pod "${pod}" -o jsonpath='{.status.phase}' >/dev/null 2>&1; then
+      phase=$(kubectl -n "${TARGET_NS}" get pod "${pod}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+      if [[ "${phase}" == "Succeeded" ]]; then
+        log "pod ${pod} succeeded; logs:"
+        kubectl -n "${TARGET_NS}" logs "${pod}" --tail=200 || true
+        kubectl -n "${TARGET_NS}" delete pod "${pod}" --ignore-not-found >/dev/null 2>&1 || true
+        log "CRUD passed for ${INITDB_DB}"
+        break
+      fi
+      if [[ "${phase}" == "Failed" ]]; then
+        log "pod ${pod} failed; logs:"
+        kubectl -n "${TARGET_NS}" logs "${pod}" --tail=200 || true
+        kubectl -n "${TARGET_NS}" delete pod "${pod}" --ignore-not-found >/dev/null 2>&1 || true
+        fatal "CRUD failed for ${INITDB_DB}"
+      fi
+    fi
+    if [[ $(( $(date +%s) - start )) -gt 180 ]]; then
+      log "timeout waiting for ${pod}; logs:"
+      kubectl -n "${TARGET_NS}" logs "${pod}" --tail=200 || true
+      kubectl -n "${TARGET_NS}" delete pod "${pod}" --ignore-not-found >/dev/null 2>&1 || true
+      fatal "CRUD timeout for ${INITDB_DB}"
+    fi
+    sleep 2
+  done
+  log "CRUD test completed"
+  return 0
 }
 
 main(){
@@ -485,56 +558,13 @@ main(){
   wait_for_cluster_ready
   local app_secret
   app_secret="$(wait_for_app_secret)"
-  ensure_database_exists "${INITDB_DB}"
+  ensure_database_exists
   fix_database_schema_ownership
   deploy_pooler_and_wait
   persist_artifacts
-  print_connection_uris
+  print_connection_uris_and_portforward
   run_crud_tests_via_pooler || log "CRUD tests were skipped or failed; inspect above logs"
   printf "\n[SUCCESS] CNPG deploy complete. Manifests: %s\n" "${MANIFEST_DIR}"
-}
-
-run_crud_tests_via_pooler(){
-  log "running CRUD tests via pooler"
-  local secret user pw port host db pod start phase
-  secret="$(kubectl -n "${TARGET_NS}" get secret -l "cnpg.io/cluster=${CLUSTER_NAME},cnpg.io/userType=app" -o jsonpath='{.items[0].metadata.name}')"
-  user="$(kubectl -n "${TARGET_NS}" get secret "${secret}" -o jsonpath='{.data.username}' 2>/dev/null | base64 -d)"
-  pw="$(kubectl -n "${TARGET_NS}" get secret "${secret}" -o jsonpath='{.data.password}' 2>/dev/null | base64 -d)"
-  port="$(kubectl -n "${TARGET_NS}" get secret "${secret}" -o jsonpath='{.data.port}' 2>/dev/null | base64 -d || echo 5432)"
-  host="${POOLER_NAME}.${TARGET_NS}"
-  for db in "${ADDITIONAL_DBS[@]}" "${INITDB_DB}"; do
-    pod="e2e-pgtest-${db//_/-}"
-    kubectl -n "${TARGET_NS}" delete pod "${pod}" --ignore-not-found >/dev/null 2>&1 || true
-    kubectl run "${pod}" -n "${TARGET_NS}" --restart=Never --image=postgres:16 --env="PGUSER=${user}" --env="PGPASSWORD=${pw}" --env="PGHOST=${host}" --env="PGPORT=${port}" --env="PGDATABASE=${db}" --command -- sh -c "psql -h \"\$PGHOST\" -U \"\$PGUSER\" -p \"\$PGPORT\" -d \"\$PGDATABASE\" -v ON_ERROR_STOP=1 -c \"CREATE TABLE IF NOT EXISTS e2e_test (id SERIAL PRIMARY KEY, v TEXT); INSERT INTO e2e_test(v) VALUES ('insert_test');\" && psql -h \"\$PGHOST\" -U \"\$PGUSER\" -p \"\$PGPORT\" -d \"\$PGDATABASE\" -c \"SELECT 'READ_AFTER_INSERT', count(*) FROM e2e_test;\" && psql -h \"\$PGHOST\" -U \"\$PGUSER\" -p \"\$PGPORT\" -d \"\$PGDATABASE\" -c \"UPDATE e2e_test SET v='updated_test' WHERE v='insert_test';\" && psql -h \"\$PGHOST\" -U \"\$PGUSER\" -p \"\$PGPORT\" -d \"\$PGDATABASE\" -c \"DELETE FROM e2e_test;\""
-    start=$(date +%s)
-    while true; do
-      if kubectl -n "${TARGET_NS}" get pod "${pod}" -o jsonpath='{.status.phase}' >/dev/null 2>&1; then
-        phase=$(kubectl -n "${TARGET_NS}" get pod "${pod}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-        if [[ "${phase}" == "Succeeded" ]]; then
-          log "pod ${pod} succeeded; logs:"
-          kubectl -n "${TARGET_NS}" logs "${pod}" --tail=200 || true
-          kubectl -n "${TARGET_NS}" delete pod "${pod}" --ignore-not-found >/dev/null 2>&1 || true
-          log "CRUD passed for ${db}"
-          break
-        fi
-        if [[ "${phase}" == "Failed" ]]; then
-          log "pod ${pod} failed; logs:"
-          kubectl -n "${TARGET_NS}" logs "${pod}" --tail=200 || true
-          kubectl -n "${TARGET_NS}" delete pod "${pod}" --ignore-not-found >/dev/null 2>&1 || true
-          fatal "CRUD failed for ${db}"
-        fi
-      fi
-      if [[ $(( $(date +%s) - start )) -gt 180 ]]; then
-        log "timeout waiting for ${pod}; logs:"
-        kubectl -n "${TARGET_NS}" logs "${pod}" --tail=200 || true
-        kubectl -n "${TARGET_NS}" delete pod "${pod}" --ignore-not-found >/dev/null 2>&1 || true
-        fatal "CRUD timeout for ${db}"
-      fi
-      sleep 2
-    done
-  done
-  log "all CRUD tests via pooler passed"
-  return 0
 }
 
 case "${1:-}" in

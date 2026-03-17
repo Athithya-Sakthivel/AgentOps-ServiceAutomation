@@ -8,10 +8,8 @@ spec:
   imageName: ghcr.io/cloudnative-pg/postgresql:18.3-minimal-trixie
   bootstrap:
     initdb:
-      database: agents
+      database: agentops
       owner: app
-      postInitSQL:
-        - CREATE DATABASE demo_users OWNER app;
       postInitApplicationSQL:
         - ALTER SCHEMA public OWNER TO app;
   storage:

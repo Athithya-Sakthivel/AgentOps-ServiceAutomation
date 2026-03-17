@@ -1,4 +1,10 @@
 
+build:
+	mkdir -p bin && \
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+	go build -trimpath -buildvcs=false -ldflags="-s -w -buildid=" -o bin/seed_billing_scenarios ./cmd/seed_billing_scenarios
+
+
 recreate:
 	make lc && make rollout-default-sc && make rollout-pg && make rollout-kuberay-operator && \
 	make test-pg && \
@@ -33,7 +39,8 @@ test-iac-staging:
 	bash src/terraform/run.sh --delete --yes-delete --env staging
 
 lc:
-	kind delete cluster --name local-cluster || true && kind create cluster --name local-cluster && bash src/core/default_storage_class.sh
+	kind delete cluster --name local-cluster || true && kind create cluster --name local-cluster && bash src/core/default_storage_class.sh && \
+	bash src/core/postgres_cluster.sh --rollout
 	
 tree:
 	tree -a -I '.git|.venv|.repos|src'

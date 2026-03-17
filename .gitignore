@@ -20,6 +20,7 @@ venv/
 tmp.md
 tmp.sh
 tmp
+bin
 tmp2.sh
 infra/manifests/inference/02-deployment.yaml
 infra/manifests/qdrant/secret-sample.yaml

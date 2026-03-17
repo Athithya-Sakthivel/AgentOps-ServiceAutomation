@@ -36,7 +36,7 @@
     "GOLANG_VERSION": "1.26.1",
     "GOPATH": "/go"
   },
-  "postCreateCommand": "bash src/scripts/bootstrap.sh && kind create cluster --name local-cluster",
+  "postCreateCommand": "bash src/scripts/bootstrap.sh && make lc",
   "customizations": {
     "vscode": {
       "extensions": [

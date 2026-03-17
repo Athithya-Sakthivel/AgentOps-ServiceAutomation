@@ -97,6 +97,8 @@ if command -v go >/dev/null 2>&1; then
   echo "[INFO] go found; installing golangci-lint v2.11.3 via go install"
   go install github.com/golangci/golangci-lint/cmd/golangci-lint@v2.11.3 || true
 fi
+apt update
+apt install -y postgresql-client
 
 clear
 echo "gitleaks version $(gitleaks version 2>/dev/null || true)"
