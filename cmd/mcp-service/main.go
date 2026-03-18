@@ -9,77 +9,84 @@ import (
 	"time"
 
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-	"github.com/golang-migrate/migrate/v4"
-	migratepg "github.com/golang-migrate/migrate/v4/database/postgres"
-	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	mcp "github.com/Athithya-Sakthivel/AgentOps-ServiceAutomation/services/mcp_service"
-	"github.com/Athithya-Sakthivel/AgentOps-ServiceAutomation/services/mcp_service/middleware"
+	migratepg "github.com/golang-migrate/migrate/v4/database/postgres"
+	"github.com/golang-migrate/migrate/v4"
 
+	"github.com/Athithya-Sakthivel/AgentOps-ServiceAutomation/services/mcp_service"
+	dbpkg "github.com/Athithya-Sakthivel/AgentOps-ServiceAutomation/services/mcp_service/db"
+	"github.com/Athithya-Sakthivel/AgentOps-ServiceAutomation/services/mcp_service/middleware"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
 
 func main() {
-	logger, err := zap.NewProduction()
-	if err != nil {
-		panic(err)
-	}
+	logger, _ := zap.NewProduction()
 	defer logger.Sync()
+
+	ctx := context.Background()
 
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		logger.Fatal("DATABASE_URL environment variable is required")
 	}
 
-	logger.Info("app starting", zap.String("DATABASE_URL_redacted", redactDB(databaseURL)))
-
-	// Apply migrations from ./migrations using database/sql with pgx stdlib
-	if err := applyMigrations(databaseURL, "file://./migrations", logger); err != nil {
-		logger.Fatal("migrations failed", zap.Error(err))
-	}
-	logger.Info("migrations applied")
-
-	ctx := context.Background()
-	db, err := mcp.NewDB(ctx, logger)
-	if err != nil {
-		logger.Fatal("db init failed", zap.Error(err))
-	}
-
-	// sanity: ensure tool_calls exists (migration 003 creates it)
-	if ok := ensureToolCallsExists(ctx, db, logger); !ok {
-		logger.Fatal("required table tool_calls not found; apply migrations before starting")
-	}
-
-	srv := mcp.NewServer(ctx, logger, db)
-
-	srv.App.Use(middleware.IdempotencyKey())
-	srv.App.Use(middleware.RequestLogger(logger))
-	srv.App.Use(middleware.RequireJSON())
-
 	addr := os.Getenv("MCP_ADDR")
 	if addr == "" {
 		addr = ":8080"
 	}
 
+	migrationsDir := os.Getenv("MIGRATIONS_DIR")
+	if migrationsDir == "" {
+		migrationsDir = "file://./migrations"
+	}
+
+	applyMigrations := true
+	if v := os.Getenv("MIGRATE_ON_START"); v == "false" || v == "0" {
+		applyMigrations = false
+	}
+
+	if applyMigrations {
+		logger.Info("applying migrations", zap.String("dir", migrationsDir))
+		if err := applyMigrationsSQL(databaseURL, migrationsDir); err != nil {
+			logger.Fatal("migrations failed", zap.Error(err))
+		}
+		logger.Info("migrations applied")
+	}
+
+	pool, err := initPool(ctx, databaseURL, logger)
+	if err != nil {
+		logger.Fatal("pgx pool init failed", zap.Error(err))
+	}
+
+	db := dbpkg.NewDB(ctx, pool, logger)
+	server := mcp_service.NewServer(logger, db)
+
+	server.App.Use(middleware.IdempotencyKey())
+	server.App.Use(middleware.RequestLogger(logger))
+	server.App.Use(middleware.RequireJSON())
+
 	go func() {
-		if err := srv.Start(addr); err != nil {
-			logger.Fatal("server failed", zap.Error(err))
+		if err := server.Start(addr); err != nil {
+			logger.Fatal("server listen failed", zap.Error(err))
 		}
 	}()
 
 	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.Error("shutdown failed", zap.Error(err))
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		logger.Error("server shutdown error", zap.Error(err))
+	} else {
+		logger.Info("server shutdown complete")
 	}
 }
 
-func applyMigrations(databaseURL, migrationsDir string, logger *zap.Logger) error {
+func applyMigrationsSQL(databaseURL, migrationsDir string) error {
 	db, err := sql.Open("pgx", databaseURL)
 	if err != nil {
 		return err
@@ -106,22 +113,32 @@ func applyMigrations(databaseURL, migrationsDir string, logger *zap.Logger) erro
 	return nil
 }
 
-func ensureToolCallsExists(ctx context.Context, db *mcp.DB, logger *zap.Logger) bool {
-	row := db.Pool.QueryRow(ctx, `SELECT to_regclass('public.tool_calls')`)
-	var name *string
-	if err := row.Scan(&name); err != nil {
-		logger.Error("check tool_calls failed", zap.Error(err))
-		return false
+func initPool(ctx context.Context, databaseURL string, logger *zap.Logger) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		logger.Error("pgxpool.ParseConfig failed", zap.Error(err))
+		return nil, err
 	}
-	if name == nil {
-		logger.Warn("tool_calls table not present")
-		return false
+	if cfg.MaxConns == 0 {
+		cfg.MaxConns = 8
 	}
-	logger.Info("tool_calls table found")
-	return true
-}
+	if cfg.MinConns == 0 {
+		cfg.MinConns = 1
+	}
+	cfg.MaxConnIdleTime = 5 * time.Minute
 
-func redactDB(s string) string {
-	// minimal redaction for logs
-	return s
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		logger.Error("pgxpool.NewWithConfig failed", zap.Error(err))
+		return nil, err
+	}
+
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := pool.Ping(pingCtx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	logger.Info("pgxpool connected")
+	return pool, nil
 }
